@@ -202,8 +202,17 @@ BBLauncher::BBLauncher(bool noGUI, bool noInstanceRunning, QWidget* parent)
             }
 
             std::filesystem::path path = Common::PathFromQString(QBBInstallLoc);
-            std::string serial = Common::GetGameSerial(path);
+            std::filesystem::path ebootPath = path / "eboot.bin";
 
+            if (!std::filesystem::exists(ebootPath)) {
+                QMessageBox::warning(
+                    this, "Install Location not valid",
+                    "No eboot.bin file found in selected folder. Make sure you are choosing the "
+                    "folder containing the extracted files (not PKG) of the base game");
+                return;
+            }
+
+            std::string serial = Common::GetGameSerial(path);
             if (std::find(BBSerialList.begin(), BBSerialList.end(), serial) != BBSerialList.end()) {
                 ui->ExeLabel->setText(QBBInstallLoc);
                 Common::game_serial = serial;
@@ -212,7 +221,9 @@ BBLauncher::BBLauncher(bool noGUI, bool noInstanceRunning, QWidget* parent)
             } else {
                 QMessageBox::warning(
                     this, "Install Location not valid",
-                    "Install folder invalid or does not contain required Bloodborne files");
+                    "Install folder invalid or does not contain required Bloodborne files. Make "
+                    "sure you are choosing the folder containing the extracted files (not PKG) of "
+                    "the base game");
             }
         }
     });
