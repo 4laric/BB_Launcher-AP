@@ -1,13 +1,11 @@
 // SPDX-FileCopyrightText: Copyright 2024 BBLauncher Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <fstream>
 #include <QMessageBox>
 #include <QProgressBar>
 
 #include "ModManager.h"
 #include "ModMerger.h"
-#include "modules/Zar/game_backend.h"
 #include "modules/ui_ModManager.h"
 #include "settings/config.h"
 
@@ -35,6 +33,24 @@ static bool IsNotNtfsDrive(const std::filesystem::path& folderPath) {
     return false;
 }
 #endif
+
+namespace {
+modservice::OverlayMode DefaultOverlayMode() {
+#if defined(FORCE_UAC) || !defined(_WIN32)
+    return modservice::OverlayMode::Symlink;
+#else
+    return modservice::OverlayMode::Copy;
+#endif
+}
+
+QString TransferLabel() {
+#if defined(FORCE_UAC) || !defined(_WIN32)
+    return QStringLiteral("Backing up original files, symlinking to shadPS4 mods folder");
+#else
+    return QStringLiteral("Backing up original files, copying to shadPS4 mods folder");
+#endif
+}
+} // namespace
 
 ModManager::ModManager(QWidget* parent) : QDialog(parent), ui(new Ui::ModManager) {
     ui->setupUi(this);
@@ -91,6 +107,28 @@ ModManager::ModManager(QWidget* parent) : QDialog(parent), ui(new Ui::ModManager
     ui->ModHelpLabel->setTextInteractionFlags(Qt::TextBrowserInteraction);
     ui->ModHelpLabel->setOpenExternalLinks(true);
 
+    std::filesystem::path installPath = Common::installPath;
+    std::string filename;
+    if (Core::FileSys::IsZArchiveFile(installPath)) {
+        filename = Core::FileSys::StripZArchiveExtension(installPath).filename().string();
+    } else {
+        filename = installPath.filename().string();
+    }
+
+    if (Core::FileSys::IsZArchiveFile(installPath)) {
+        installPath = installPath.parent_path() / filename;
+    }
+
+    ModInstallPath = installPath + "-mods";
+    ModBackupPath = installPath.parent_path() / (filename + "-modsBACKUP");
+
+    // The service alone owns activation state: active folders, overlay
+    // files, conflict backups and the operation journal. The dialog only
+    // owns selection, prompts and progress display.
+    m_service = std::make_unique<modservice::ModService>(
+        Common::ModPath, ModActivePath, ModInstallPath / "dvdroot_ps4", ModBackupPath,
+        DefaultOverlayMode(), Common::GetBBLFilesPath() / "ModServiceJournal");
+
     RefreshLists();
 
     connect(ui->ResetButton, &QPushButton::pressed, this, &ModManager::ResetInstallation);
@@ -103,32 +141,11 @@ ModManager::ModManager(QWidget* parent) : QDialog(parent), ui(new Ui::ModManager
         MergeWindow->exec();
         RefreshLists();
     });
+}
 
-    ModInstallPath = Common::installPath;
-    std::string filename;
-    if (Core::FileSys::IsZArchiveFile(ModInstallPath)) {
-        filename = Core::FileSys::StripZArchiveExtension(ModInstallPath).filename().string();
-    } else {
-        filename = ModInstallPath.filename().string();
-    }
-
-    if (Core::FileSys::IsZArchiveFile(ModInstallPath)) {
-        ModInstallPath = ModInstallPath.parent_path() / filename;
-    }
-
-    ModInstallPath += "-mods";
-    ModBackupPath = ModInstallPath.parent_path() / (filename + "-modsBACKUP");
-
-    if (!std::filesystem::exists(ModInstallPath / "dvdroot_ps4"))
-        std::filesystem::create_directories(ModInstallPath / "dvdroot_ps4");
-
-    if (!std::filesystem::exists(Common::ModPath)) {
-        std::filesystem::create_directories(Common::ModPath);
-    }
-
-    if (!std::filesystem::exists(ModBackupPath)) {
-        std::filesystem::create_directories(ModBackupPath);
-    }
+void ModManager::ReportProgress(std::size_t done, std::size_t total) {
+    ui->progressBar->setMaximum(static_cast<int>(total));
+    emit progressChanged(static_cast<int>(done));
 }
 
 void ModManager::ActivateMod() {
@@ -141,150 +158,48 @@ void ModManager::ActivateMod() {
 
     const std::string ModName = ui->InactiveModList->currentItem()->text().toStdString();
 
-#ifdef _WIN32
-    const std::wstring ModString = ui->InactiveModList->currentItem()->text().toStdWString();
-#else
-    const std::string ModString = ModName;
-#endif
-
-    const std::filesystem::path ModFolderPath = Common::ModPath / ModString;
-    const std::filesystem::path ModBackupFolderPath = ModBackupPath / ModString;
-    const std::filesystem::path ModActiveFolderPath = ModActivePath / ModString;
-
-    const bool has_dvdroot = std::filesystem::exists(ModFolderPath / "dvdroot_ps4");
-    std::filesystem::path ModSourcePath;
-    if (!has_dvdroot) {
-        ModSourcePath = ModFolderPath;
-    } else {
-        ModSourcePath = ModFolderPath / "dvdroot_ps4";
-    }
-
-    bool HasBBFolders = false;
-    for (const auto& entry : std::filesystem::directory_iterator(ModSourcePath)) {
-        if (entry.is_directory()) {
-            auto relative_path = std::filesystem::relative(entry, ModSourcePath);
-            std::string relative_path_string = Common::PathToU8(relative_path);
-            if (std::find(BBFolders.begin(), BBFolders.end(), relative_path_string) !=
-                BBFolders.end()) {
-                HasBBFolders = true;
-                break;
-            }
+    modservice::Plan plan;
+    modservice::Result planned = m_service->PlanActivate(ModName, plan);
+    if (!planned.ok && std::string(planned.code) == modservice::kConflict) {
+        QString report;
+        for (const std::string& entry : plan.conflictingMods) {
+            report += QString::fromStdString(entry) + "\n";
         }
-    }
-
-    if (!HasBBFolders) {
-        QMessageBox::warning(this, "Invalid Mod",
-                             "Folders inside mod folder must include either dvdroot_ps4"
-                             " or Bloodborne dvdroot_ps4 subfolders (ex. sfx, parts, map)");
+        if (QMessageBox::Yes ==
+            QMessageBox::question(
+                this, "Mod conflict found",
+                report +
+                    "\nThis file conflicts with the same file in this mod."
+                    " Some conflicting mods cannot function properly "
+                    "together.\n\nProceed with activation?",
+                QMessageBox::Yes | QMessageBox::No)) {
+            plan.conflictOverride = true;
+        } else {
+            return;
+        }
+    } else if (!planned.ok) {
+        QMessageBox::warning(this, "Cannot activate mod",
+                             QString::fromStdString(planned.detail));
         return;
     }
 
-    bool hasconflict = false;
-    std::vector<std::string> FileList = GetModifiedFileList(ModName);
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(ModSourcePath)) {
-        if (!entry.is_directory()) {
-            auto relative_path = std::filesystem::relative(entry, ModSourcePath);
-            std::string relative_path_string = Common::PathToU8(relative_path);
-            for (int i = 0; i < FileList.size(); i++) {
-                if (hasconflict)
-                    break;
+    ui->FileTransferLabel->setText(TransferLabel());
+    ui->progressBar->setValue(0);
 
-                std::size_t filelist_comma_pos = FileList[i].find(',');
-                std::string filelist_relative_string = FileList[i].substr(0, filelist_comma_pos);
-                if (filelist_relative_string == relative_path_string) {
-                    hasconflict = true;
-                    if (QMessageBox::Yes ==
-                        QMessageBox::question(
-                            this, "Mod conflict found",
-                            QString::fromStdString(FileList[i]) +
-                                "\n\nThis file conflicts with the same file in this mod."
-                                " Some conflicting mods cannot function properly "
-                                "together.\n\nProceed with activation?",
-                            QMessageBox::Yes | QMessageBox::No)) {
-                        break;
-                    } else {
-                        return;
-                    }
-                }
-            }
-        }
-    }
-
-    try {
-        if (std::filesystem::exists(ModActiveFolderPath))
-            std::filesystem::remove_all(ModActiveFolderPath);
-        if (!std::filesystem::exists(ModActivePath))
-            std::filesystem::create_directories(ModActivePath);
-
-        std::filesystem::rename(ModSourcePath, ModActiveFolderPath);
-        std::filesystem::remove_all(ModFolderPath);
-    } catch (std::exception& ex) {
-        QMessageBox::warning(
-            this, "Filesystem error",
-            "Error accessing folders, make sure they are not open or in use.\n\nError message: " +
-                QString::fromStdString(ex.what()));
-        return;
-    }
-
-#if defined FORCE_UAC or !defined _WIN32
-    ui->FileTransferLabel->setText("Backing up original files, symlinking to shadPS4 mods folder");
-#else
-    ui->FileTransferLabel->setText("Backing up original files, copying to shadPS4 mods folder");
-#endif
-
-    ui->progressBar->setMaximum(getFileCount(ModActiveFolderPath));
-
-    bool haserror = false;
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(ModActiveFolderPath)) {
-        auto relative_path = std::filesystem::relative(entry, ModActiveFolderPath);
-        try {
-            if (!entry.is_directory()) {
-                if (!std::filesystem::exists(ModBackupFolderPath / relative_path.parent_path())) {
-                    std::filesystem::create_directories(ModBackupFolderPath /
-                                                        relative_path.parent_path());
-                }
-
-                if (std::filesystem::exists(ModInstallPath / "dvdroot_ps4" / relative_path) ||
-                    std::filesystem::is_symlink(ModInstallPath / "dvdroot_ps4" / relative_path)) {
-                    std::filesystem::rename(ModInstallPath / "dvdroot_ps4" / relative_path,
-                                            ModBackupFolderPath / relative_path);
-                }
-
-                if (!std::filesystem::exists(ModInstallPath / "dvdroot_ps4" /
-                                             relative_path.parent_path())) {
-                    std::filesystem::create_directories(ModInstallPath / "dvdroot_ps4" /
-                                                        relative_path.parent_path());
-                }
-#if defined FORCE_UAC or !defined _WIN32
-                std::filesystem::create_symlink(ModActiveFolderPath / relative_path,
-                                                ModInstallPath / "dvdroot_ps4" / relative_path);
-#else
-                std::filesystem::copy_file(ModActiveFolderPath / relative_path,
-                                           ModInstallPath / "dvdroot_ps4" / relative_path,
-                                           std::filesystem::copy_options::overwrite_existing);
-#endif
-                emit progressChanged(ui->progressBar->value() + 1);
-            }
-        } catch (std::exception& ex) {
-            QMessageBox::warning(this, "Filesystem error backing up files", ex.what());
-            haserror = true;
-            break;
-        }
-    }
-
-    if (hasconflict)
-        ConflictAdd(ModName);
+    modservice::Result result = m_service->Commit(
+        plan, [this](std::size_t done, std::size_t total) { ReportProgress(done, total); });
 
     RefreshLists();
     ui->progressBar->setValue(0);
     ui->FileTransferLabel->setText("No Current File Transfers");
 
-    if (haserror) {
+    if (!result.ok) {
         QMessageBox::information(this, "Error Activating Mod",
                                  "An error occurred activating mod " +
                                      QString::fromStdString(ModName) +
                                      ". Bloodbone may no longer function correctly. Resetting "
-                                     "installation is recommendeded",
+                                     "installation is recommendeded.\n\n" +
+                                     QString::fromStdString(result.detail),
                                  QMessageBox::Ok);
     } else {
         QMessageBox::information(this, "Mod Activated",
@@ -302,203 +217,51 @@ void ModManager::DeactivateMod() {
     }
 
     const std::string ModName = ui->ActiveModList->currentItem()->text().toStdString();
-#ifdef _WIN32
-    const std::wstring ModString = ui->ActiveModList->currentItem()->text().toStdWString();
-#else
-    const std::string ModString = ModName;
-#endif
 
-    const std::filesystem::path ModFolderPath = Common::ModPath / ModString;
-    const std::filesystem::path ModBackupFolderPath = ModBackupPath / ModString;
-    const std::filesystem::path ModActiveFolderPath = ModActivePath / ModString;
+    modservice::Plan plan;
+    modservice::Result planned = m_service->PlanDeactivate(ModName, plan);
+    if (!planned.ok) {
+        if (std::string(planned.code) == modservice::kConflictOrder) {
+            QMessageBox::warning(this, "Most recent conflicting mod must be uninstalled first",
+                                 QString::fromStdString(planned.detail));
+            ui->progressBar->setValue(0);
+            ui->FileTransferLabel->setText("No Current File Transfers");
+        } else {
+            QMessageBox::warning(this, "Cannot deactivate mod",
+                                 QString::fromStdString(planned.detail));
+        }
+        return;
+    }
 
-    if (!std::filesystem::exists(ModBackupFolderPath)) {
+    const std::filesystem::path ModBackupFolderPath = ModBackupPath / ModName;
+    const bool backupMissing = plan.backupMissing;
+    if (backupMissing) {
         QMessageBox::warning(this,
                              "Unable to find Mod Backup " +
                                  QString::fromStdString(ModBackupFolderPath.string()),
                              "Unable to find Backup Folder, it may have been renamed or deleted.");
-
-        if (std::filesystem::exists(ModActiveFolderPath)) {
-            if (std::filesystem::exists(ModFolderPath))
-                std::filesystem::remove_all(ModFolderPath);
-            std::filesystem::rename(ModActiveFolderPath, ModFolderPath);
-        }
-        RefreshLists();
-        QMessageBox::information(this, "Error Deactivating Mod",
-                                 "An error occurred deactivating mod " +
-                                     QString::fromStdString(ModName) +
-                                     ". Bloodborne might not function correctly due to the error, "
-                                     "resetting installation is recommended.",
-                                 QMessageBox::Ok);
-
-        return;
     }
 
-    std::vector<std::string> FileList = GetModifiedFileList(ModName);
-    bool hasconflict = false;
-    int conflictfilecount;
-
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(ModActiveFolderPath)) {
-        if (!entry.is_directory()) {
-            auto relative_path = std::filesystem::relative(entry, ModActiveFolderPath);
-            std::string relative_path_string = Common::PathToU8(relative_path);
-            for (int i = 0; i < FileList.size(); i++) {
-                std::size_t filelist_comma_pos = FileList[i].find(',');
-                std::string filelist_relative_string = FileList[i].substr(0, filelist_comma_pos);
-                if (filelist_relative_string == relative_path_string) {
-                    hasconflict = true;
-                    break;
-                }
-            }
-            if (hasconflict)
-                break;
-        }
-    }
-
-    std::vector<std::string> ConflictMods;
-    std::string line;
-    if (hasconflict) {
-        std::ifstream ConflictFile(Common::ModPath / "ConflictMods.txt", std::ios::binary);
-        while (std::getline(ConflictFile, line)) {
-            ConflictMods.push_back(line);
-        }
-        ConflictFile.close();
-
-        if (ConflictMods.size() != 0 && ConflictMods.back() != ModName) {
-            QMessageBox::warning(this, "Most recent conflicting mod must be uninstalled first",
-                                 "The last installed conflicting mod must be uninstalled before "
-                                 "any others.\n\nLast conflicting mod is " +
-                                     QString::fromStdString(ConflictMods.back()));
-            ui->progressBar->setValue(0);
-            ui->FileTransferLabel->setText("No Current File Transfers");
-            return;
-        } else if (ConflictMods.size() != 0 && ConflictMods.back() == ModName) {
-            ConflictRemove(ModName);
-        }
-    }
-
-    bool haserror = false;
     ui->progressBar->setValue(0);
     ui->FileTransferLabel->setText("Removing from shadPS4 mods Folder");
-    ui->progressBar->setMaximum(getFileCount(ModActiveFolderPath));
 
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(ModActiveFolderPath)) {
-        auto relative_path = std::filesystem::relative(entry, ModActiveFolderPath);
-        if (!std::filesystem::is_directory(ModBackupFolderPath / relative_path)) {
-            try {
-                if (!std::filesystem::exists(
-                        (ModInstallPath / "dvdroot_ps4" / relative_path).parent_path())) {
-                    std::filesystem::create_directories(
-                        (ModInstallPath / "dvdroot_ps4" / relative_path).parent_path());
-                }
-
-                if (std::filesystem::exists(ModInstallPath / "dvdroot_ps4" / relative_path))
-                    std::filesystem::remove(ModInstallPath / "dvdroot_ps4" / relative_path);
-
-            } catch (std::exception& ex) {
-                QMessageBox::critical(this, "Filesystem error removing mod files", ex.what());
-                haserror = true;
-                break;
-            }
-            emit progressChanged(ui->progressBar->value() + 1);
-        }
-    }
-
+    modservice::Result result = m_service->Commit(
+        plan, [this](std::size_t done, std::size_t total) { ReportProgress(done, total); });
+    // Phase labels are coarse now that the service owns the file walk;
+    // the bar still tracks real per-file progress above.
     ui->FileTransferLabel->setText("Reverting backup");
-    ui->progressBar->setValue(0);
-    ui->progressBar->setMaximum(getFileCount(ModBackupFolderPath));
-
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(ModBackupFolderPath)) {
-        auto relative_path = std::filesystem::relative(entry, ModBackupFolderPath);
-
-        // Relative path seemingly not working on symlinks
-        if (std::filesystem::is_symlink(entry.symlink_status())) {
-#ifdef _WIN32
-            std::wstring pathString = entry.path().wstring();
-            std::wstring baseString = ModBackupFolderPath.wstring();
-#else
-            std::string pathString = entry.path().string();
-            std::string baseString = ModBackupFolderPath.string();
-#endif
-            size_t pos = std::string::npos;
-            while ((pos = pathString.find(baseString)) != std::string::npos) {
-                pathString.erase(pos, baseString.length());
-            }
-            pathString.erase(0, 1);
-            relative_path = pathString;
-        }
-
-        if (!std::filesystem::is_directory(ModBackupFolderPath / relative_path)) {
-            try {
-                if (!std::filesystem::exists(
-                        (ModInstallPath / "dvdroot_ps4" / relative_path).parent_path())) {
-                    std::filesystem::create_directories(
-                        (ModInstallPath / "dvdroot_ps4" / relative_path).parent_path());
-                }
-
-                std::filesystem::rename(ModBackupFolderPath / relative_path,
-                                        ModInstallPath / "dvdroot_ps4" / relative_path);
-
-            } catch (std::exception& ex) {
-                QMessageBox::critical(this, "Filesystem error reverting backup", ex.what());
-                haserror = true;
-                break;
-            }
-            emit progressChanged(ui->progressBar->value() + 1);
-        }
-    }
-
-    ui->progressBar->setValue(0);
-    ui->progressBar->setMaximum(100);
-    ui->FileTransferLabel->setText("No Current File Transfers");
-
-    // Remove Empty Folders
-    std::filesystem::path dir_path;
-    std::vector<std::filesystem::path> directories;
-    for (auto& p : std::filesystem::recursive_directory_iterator(ModInstallPath / "dvdroot_ps4")) {
-        dir_path = p.path();
-        if (std::filesystem::is_directory(p)) {
-            directories.push_back(std::filesystem::canonical(dir_path));
-        }
-    }
-
-    try {
-        for (std::vector<std::filesystem::path>::reverse_iterator rit = directories.rbegin();
-             rit != directories.rend(); ++rit) {
-            if (std::filesystem::is_empty(*rit)) {
-                std::filesystem::remove(*rit);
-            }
-        }
-
-        if (std::filesystem::exists(ModBackupFolderPath))
-            std::filesystem::remove_all(ModBackupFolderPath);
-    } catch (std::exception& ex) {
-        QMessageBox::warning(this, "Filesystem error",
-                             "Error message: " + QString::fromStdString(ex.what()));
-        haserror = true;
-        return;
-    }
-
-    try {
-        if (std::filesystem::exists(ModActiveFolderPath)) {
-            if (std::filesystem::exists(ModFolderPath))
-                std::filesystem::remove_all(ModFolderPath);
-            std::filesystem::rename(ModActiveFolderPath, ModFolderPath);
-        }
-    } catch (std::exception& ex) {
-        QMessageBox::warning(this, "Filesystem error",
-                             "Mod deactivated successfully but mod folder could not be moved back "
-                             "to the BBLauncher mods folder\n\nError message: " +
-                                 QString::fromStdString(ex.what()));
-    }
 
     RefreshLists();
-    if (haserror) {
+    ui->progressBar->setValue(0);
+    ui->FileTransferLabel->setText("No Current File Transfers");
+
+    if (!result.ok || backupMissing) {
         QMessageBox::information(this, "Error Deactivating Mod",
                                  "An error occurred deactivating mod " +
                                      QString::fromStdString(ModName) +
                                      ". Bloodborne might not function correctly due to the error, "
-                                     "resetting installation is recommended.",
+                                     "resetting installation is recommended.\n\n" +
+                                     QString::fromStdString(result.detail),
                                  QMessageBox::Ok);
     } else {
         QMessageBox::information(this, "Mod Deactivated",
@@ -514,70 +277,17 @@ void ModManager::RefreshLists() {
     ui->ActiveModList->clear();
     ui->InactiveModList->clear();
 
-    for (const auto& FolderEntry : std::filesystem::directory_iterator(ModActivePath)) {
-        if (FolderEntry.is_directory()) {
-            std::string FolderName = Common::PathToU8(FolderEntry.path().filename());
-            ActiveModStringList.append(QString::fromStdString(FolderName));
-        }
+    for (const std::string& FolderName : m_service->ActiveMods()) {
+        ActiveModStringList.append(QString::fromStdString(FolderName));
     }
     ActiveModStringList.sort(Qt::CaseInsensitive);
     ui->ActiveModList->addItems(ActiveModStringList);
 
-    for (auto& FolderEntry : std::filesystem::directory_iterator(Common::ModPath)) {
-        if (FolderEntry.is_directory()) {
-            std::string FolderName = Common::PathToU8(FolderEntry.path().filename());
-            InactiveModStringList.append(QString::fromStdString(FolderName));
-        }
+    for (const std::string& FolderName : m_service->InactiveMods()) {
+        InactiveModStringList.append(QString::fromStdString(FolderName));
     }
     InactiveModStringList.sort(Qt::CaseInsensitive);
     ui->InactiveModList->addItems(InactiveModStringList);
-}
-
-int ModManager::getFileCount(std::filesystem::path Path) {
-    int fileCount = 0;
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(Path)) {
-        if (!entry.is_directory()) {
-            fileCount = fileCount + 1;
-        }
-    }
-    return fileCount;
-}
-
-void ModManager::ConflictAdd(std::string ModName) {
-    std::string line;
-    std::vector<std::string> ConflictMods;
-
-    std::ifstream ConflictFile(Common::ModPath / "ConflictMods.txt", std::ios::binary);
-    while (std::getline(ConflictFile, line)) {
-        ConflictMods.push_back(line);
-    }
-    ConflictFile.close();
-
-    ConflictMods.push_back(ModName);
-
-    std::ofstream ConflictFileSave(Common::ModPath / "ConflictMods.txt", std::ios::binary);
-    for (const auto& i : ConflictMods)
-        ConflictFileSave << i << "\n";
-    ConflictFileSave.close();
-}
-
-void ModManager::ConflictRemove(std::string ModName) {
-    std::string line;
-    std::vector<std::string> ConflictMods;
-
-    std::ifstream ConflictFile(Common::ModPath / "ConflictMods.txt", std::ios::binary);
-    while (std::getline(ConflictFile, line)) {
-        ConflictMods.push_back(line);
-    }
-    ConflictFile.close();
-
-    auto itr = std::find(ConflictMods.begin(), ConflictMods.end(), ModName);
-    ConflictMods.erase(itr);
-
-    std::ofstream ConflictFileSave(Common::ModPath / "ConflictMods.txt", std::ios::binary);
-    for (const auto& i : ConflictMods)
-        ConflictFileSave << i << "\n";
-    ConflictFileSave.close();
 }
 
 void ModManager::ResetInstallation() {
@@ -588,61 +298,19 @@ void ModManager::ResetInstallation() {
         return;
     }
 
-    try {
-        std::filesystem::remove_all(ModInstallPath);
-        std::filesystem::create_directories(ModInstallPath / "dvdroot_ps4");
+    modservice::Result result = m_service->ResetInstallation();
 
-        std::filesystem::remove_all(ModBackupPath);
-        std::filesystem::create_directories(ModBackupPath);
-
-        std::filesystem::remove(Common::ModPath / "ConflictMods.txt");
-
-        if (std::filesystem::exists(ModActivePath)) {
-            for (const auto& entry : std::filesystem::directory_iterator(ModActivePath)) {
-                if (entry.is_directory()) {
-#ifdef _WIN32
-                    const std::wstring ModString = entry.path().filename().wstring();
-#else
-                    const std::string ModString = entry.path().filename().string();
-#endif
-                    std::filesystem::rename(entry.path(), Common::ModPath / ModString);
-                }
-            }
-        }
-    } catch (std::exception& ex) {
-        RefreshLists();
+    RefreshLists();
+    if (!result.ok) {
         QMessageBox::warning(this, "Filesystem error",
                              "Error resetting installation. Make sure all game and mod "
-                             "folders/files are not open or in use\n\nError message: " +
-                                 QString::fromStdString(ex.what()));
+                             "folders/files are not open or in use\n\n" +
+                                 QString::fromStdString(result.detail));
         return;
     }
 
-    RefreshLists();
     QMessageBox::information(this, "Reset Complete", "Reset Successfully completed",
                              QMessageBox::Ok);
-}
-
-std::vector<std::string> ModManager::GetModifiedFileList(std::string ExcludeMod) {
-    std::vector<std::string> vec;
-    for (const auto& FolderEntry : std::filesystem::directory_iterator(ModActivePath)) {
-        if (FolderEntry.is_directory()) {
-            std::string FolderName = Common::PathToU8(FolderEntry.path().filename());
-
-            if (FolderName != ExcludeMod) {
-                for (const auto& FileEntry :
-                     std::filesystem::recursive_directory_iterator(FolderEntry)) {
-                    if (!FileEntry.is_directory()) {
-                        auto relative_path = std::filesystem::relative(FileEntry, FolderEntry);
-                        const auto u8_string = Common::PathToU8(relative_path) + ", " + FolderName;
-                        std::string relative_path_string{u8_string.begin(), u8_string.end()};
-                        vec.push_back(relative_path_string);
-                    }
-                }
-            }
-        }
-    }
-    return vec;
 }
 
 ModManager::~ModManager() {

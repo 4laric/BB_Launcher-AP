@@ -4,10 +4,12 @@
 #pragma once
 
 #include <filesystem>
+#include <memory>
 #include <QMainWindow>
 #include <QPushButton>
 #include <QVBoxLayout>
 
+#include "modules/EmulatorService.h"
 #include "modules/QAnsiTextEdit.h"
 #include "modules/ipc/ipc_client.h"
 #include "settings/emulator_settings.h"
@@ -25,8 +27,13 @@ public:
     ~BBLauncher();
 
     bool canLaunch = true;
+    // Single funnel for every emulator startup route (regular play,
+    // Archipelago play, Restart, IPC, no-GUI). The AP coordinator
+    // installs a preflight handler while a session is armed/active.
+    EmulatorService* emulatorService() const { return m_emu_service.get(); }
+    const EmulatorProcessIdentity& lastEmulatorIdentity() const { return m_lastIdentity; }
 
-public slots:
+ public slots:
 
 private slots:
     void ShadSelectButton_isPressed();
@@ -55,6 +62,8 @@ private:
     Ui::BBLauncher* ui;
     QAnsiTextEdit* logDisplay;
     std::shared_ptr<IpcClient> m_ipc_client = std::make_shared<IpcClient>();
+    std::unique_ptr<EmulatorService> m_emu_service;
+    EmulatorProcessIdentity m_lastIdentity;
     std::shared_ptr<EmulatorSettingsImpl> m_emu_settings = std::make_shared<EmulatorSettingsImpl>();
     std::shared_ptr<UserSettingsImpl> m_user_settings = std::make_shared<UserSettingsImpl>();
 

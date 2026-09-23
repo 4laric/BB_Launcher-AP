@@ -144,6 +144,10 @@ set(PROJECT_SOURCES
     modules/ModManager.h
     modules/ModManager.cpp
     modules/ModManager.ui
+    modules/ModService.h
+    modules/ModService.cpp
+    modules/EmulatorService.h
+    modules/EmulatorService.cpp
     modules/ModMerger.cpp
     modules/ModMerger.h
     modules/ModMerger.ui

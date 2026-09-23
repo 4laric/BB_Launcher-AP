@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <filesystem>
+#include <memory>
 #include <QDialog>
 
 #include "Common.h"
+#include "ModService.h"
 
 namespace Ui {
 class ModManager;
@@ -28,20 +30,13 @@ private:
     Ui::ModManager* ui;
 
     void RefreshLists();
-    int getFileCount(std::filesystem::path ModFolder);
-    void ConflictAdd(std::string ModName);
-    void ConflictRemove(std::string ModName);
+    void ReportProgress(std::size_t done, std::size_t total);
     void ResetInstallation();
-    std::vector<std::string> GetModifiedFileList(std::string ExcludeMod);
+
+    std::unique_ptr<modservice::ModService> m_service;
 
     std::filesystem::path ModInstallPath;
     std::filesystem::path ModBackupPath;
     const std::filesystem::path ModActivePath =
         Common::GetBBLFilesPath() / "Mods-Active (DO NOT DELETE)";
-
-    const std::vector<std::string> BBFolders = {
-        "dvdroot_ps4", "action", "adhoc",  "chr",    "event",   "facegen", "map",
-        "menu",        "movie",  "msg",    "mtd",    "obj",     "other",   "param",
-        "paramdef",    "parts",  "remo",   "script", "sfx",     "shader",  "sound",
-        "font"};
 };

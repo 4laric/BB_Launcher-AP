@@ -72,6 +72,7 @@ BBLauncher::BBLauncher(bool noGUI, bool noInstanceRunning, QWidget* parent)
     m_ipc_client->gameClosedFunc = [this]() { onGameClosed(); };
     m_ipc_client->restartEmulatorFunc = [this]() { RestartEmulator(); };
     m_ipc_client->startGameFunc = [this]() { RunGame(); };
+    m_emu_service = std::make_unique<EmulatorService>(m_ipc_client.get(), this);
 
     if (std::filesystem::exists(Common::GetBBLFilesPath() / "log.txt"))
         std::filesystem::remove(Common::GetBBLFilesPath() / "log.txt");
@@ -747,6 +748,11 @@ void BBLauncher::onGameClosed() {
 }
 
 void BBLauncher::RunGame() {
+    QString refusal;
+    if (!m_emu_service->Check(QStringLiteral("start-game"), &refusal)) {
+        QMessageBox::information(nullptr, "BBLauncher", refusal);
+        return;
+    }
     auto patches = readPatches(Common::game_serial, "01.09");
     for (auto patch : patches) {
         m_ipc_client->sendMemoryPatches(patch.modName, patch.address, patch.value, patch.target,
@@ -779,7 +785,13 @@ void BBLauncher::RestartEmulator() {
     QFileInfo fileInfo(exe);
     QString workDir = fileInfo.absolutePath();
 
-    m_ipc_client->startEmulator(fileInfo, args, workDir);
+    EmulatorProcessIdentity identity;
+    QString error;
+    if (!m_emu_service->Restart(fileInfo, args, workDir, &identity, &error)) {
+        QMessageBox::information(nullptr, "BBLauncher", error);
+        return;
+    }
+    m_lastIdentity = identity;
 }
 
 std::vector<MemoryPatcher::PendingPatch> BBLauncher::readPatches(std::string gameSerial,
@@ -1003,7 +1015,13 @@ void BBLauncher::StartEmulator(std::filesystem::path path, QStringList args) {
     args = gameArgs + args;
 
     QString workDir = fileInfo.absolutePath();
-    m_ipc_client->startEmulator(fileInfo, args, workDir);
+    EmulatorProcessIdentity identity;
+    QString error;
+    if (!m_emu_service->Start(fileInfo, args, workDir, &identity, &error)) {
+        QMessageBox::critical(nullptr, tr("Run Game"), error);
+        return;
+    }
+    m_lastIdentity = identity;
 
     Config::GameRunning = true;
 }
