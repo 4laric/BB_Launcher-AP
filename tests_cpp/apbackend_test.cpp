@@ -46,9 +46,11 @@ static void WriteJson(const QString& path, const QJsonObject& object) {
 int main(int argc, char* argv[]) {
     QCoreApplication app(argc, argv);
 
-    const char* sourceRoot = std::getenv("BB_AP_SOURCE_ROOT");
-    if (sourceRoot == nullptr || *sourceRoot == '\0') {
-        std::cout << "SKIP: BB_AP_SOURCE_ROOT is not set\n";
+    // Frozen bundle first, source checkout otherwise: skip only when no
+    // backend is discoverable at all.
+    if (ApBackend::FindBackend().isEmpty()) {
+        std::cout << "SKIP: no AP backend found (frozen bundle, BB_AP_BACKEND, "
+                     "or BB_AP_SOURCE_ROOT + python)\n";
         return 2;
     }
 
