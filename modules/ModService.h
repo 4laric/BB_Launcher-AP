@@ -129,6 +129,7 @@ class ModService {
   private:
     Result CommitActivate(const Plan& plan, Progress progress, Cancelled cancelled);
     Result CommitDeactivate(const Plan& plan, Progress progress, Cancelled cancelled);
+    Result Rollback(const Plan& plan) const;
     void JournalAppend(const std::string& kind, const Plan& plan,
                        const std::vector<std::string>& extra = {}) const;
     std::filesystem::path m_inactiveRoot;
