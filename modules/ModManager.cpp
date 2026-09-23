@@ -6,6 +6,7 @@
 
 #include "ModManager.h"
 #include "ModMerger.h"
+#include "modules/Zar/game_backend.h"
 #include "modules/ui_ModManager.h"
 #include "settings/config.h"
 
@@ -119,7 +120,8 @@ ModManager::ModManager(QWidget* parent) : QDialog(parent), ui(new Ui::ModManager
         installPath = installPath.parent_path() / filename;
     }
 
-    ModInstallPath = installPath + "-mods";
+    ModInstallPath = installPath;
+    ModInstallPath += "-mods";
     ModBackupPath = installPath.parent_path() / (filename + "-modsBACKUP");
 
     // The service alone owns activation state: active folders, overlay
