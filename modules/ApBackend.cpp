@@ -11,6 +11,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QStandardPaths>
+#include <QScopedValueRollback>
 
 #include "ApFork.h"
 
@@ -183,13 +184,12 @@ bool ApBackend::EnsureLine(const QString& id, int timeoutMs, QByteArray* line,
     while (timer.elapsed() < timeoutMs) {
         // Pump events so the UI repaints and Cancel stays live during
         // long backend operations such as seed preparation.
-        QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 50);
-        if (m_cancelRequested) {
-            if (error != nullptr) {
-                *error = QStringLiteral("cancelled");
-            }
-            return false;
-        }
+        // The AP page disables every state-mutating control while a call is
+        // outstanding and permits only its Cancel button. Processing that
+        // one input keeps cancellation responsive without allowing nested
+        // Play/activation actions. We keep reading the matching response
+        // after cancellation so the JSON-lines stream remains synchronized.
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
         int newline = m_buffer.indexOf('\n');
         if (newline >= 0) {
             *line = m_buffer.left(newline).trimmed();
@@ -219,11 +219,17 @@ bool ApBackend::EnsureLine(const QString& id, int timeoutMs, QByteArray* line,
 
 ApResponse ApBackend::Call(const QString& op, const QJsonObject& params, int timeoutMs) {
     ApResponse response;
+    if (m_callInProgress) {
+        response.error.code = QStringLiteral("backend-busy");
+        response.error.detail = QStringLiteral("An Archipelago backend request is already in progress");
+        return response;
+    }
     if (!IsRunning()) {
         response.error.code = QStringLiteral("backend-unreachable");
         response.error.detail = QStringLiteral("Archipelago backend is not running");
         return response;
     }
+    QScopedValueRollback<bool> callGuard(m_callInProgress, true);
     m_cancelRequested = false;
     response.id = QStringLiteral("q%1").arg(++m_seq);
     QJsonObject request{
@@ -278,6 +284,11 @@ ApResponse ApBackend::Call(const QString& op, const QJsonObject& params, int tim
                  err.value(QStringLiteral("recovery")).toArray()) {
                 response.error.recovery.push_back(item.toString());
             }
+        }
+        if (m_cancelRequested) {
+            response.ok = false;
+            response.error.code = QStringLiteral("cancelled");
+            response.error.detail = QStringLiteral("Cancellation was requested; the current backend step finished safely.");
         }
         return response;
     }

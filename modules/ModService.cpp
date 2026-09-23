@@ -45,6 +45,13 @@ std::string ToGeneric(const std::filesystem::path& path) {
     return path.generic_string();
 }
 
+std::filesystem::path Utf8Path(const std::string& value) {
+    std::u8string text;
+    text.reserve(value.size());
+    for (unsigned char c : value) text.push_back(static_cast<char8_t>(c));
+    return std::filesystem::path(text);
+}
+
 // Minimal JSON string escaper for journal records.
 std::string JsonEscape(const std::string& value) {
     std::string out;
@@ -521,7 +528,8 @@ void ModService::JournalAppend(const std::string& kind, const Plan& plan,
     std::ostringstream body;
     body << "{\"kind\":\"" << JsonEscape(kind) << "\",\"mod\":\""
          << JsonEscape(plan.modName) << "\",\"activating\":"
-         << (plan.activating ? "true" : "false") << ",\"mutations\":[";
+         << (plan.activating ? "true" : "false") << ",\"backupMissing\":"
+         << (plan.backupMissing ? "true" : "false") << ",\"mutations\":[";
     bool first = true;
     for (const Mutation& m : plan.mutations) {
         if (!first) {
@@ -632,7 +640,253 @@ void PruneEmptyDirs(const std::filesystem::path& root) {
         }
     }
 }
+
+bool ReadJsonString(const std::string& json, const std::string& key, std::size_t from,
+                    std::string& value, std::size_t* end = nullptr) {
+    const std::string marker = "\"" + key + "\":";
+    const std::size_t field = json.find(marker, from);
+    if (field == std::string::npos) return false;
+    std::size_t pos = field + marker.size();
+    while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) ++pos;
+    if (pos >= json.size() || json[pos++] != '"') return false;
+    value.clear();
+    while (pos < json.size()) {
+        const char c = json[pos++];
+        if (c == '"') {
+            if (end) *end = pos;
+            return true;
+        }
+        if (c != '\\') {
+            value += c;
+            continue;
+        }
+        if (pos >= json.size()) return false;
+        const char escaped = json[pos++];
+        switch (escaped) {
+        case '"': value += '"'; break;
+        case '\\': value += '\\'; break;
+        case '/': value += '/'; break;
+        case 'n': value += '\n'; break;
+        case 'r': value += '\r'; break;
+        case 't': value += '\t'; break;
+        default: return false;
+        }
+    }
+    return false;
+}
+
+bool ParsePlanRecord(const std::string& json, Plan& plan) {
+    std::string kind, mod;
+    if (!ReadJsonString(json, "kind", 0, kind) || kind != "plan" ||
+        !ReadJsonString(json, "mod", 0, mod)) return false;
+    const std::size_t activatingField = json.find("\"activating\":");
+    const std::size_t mutationsField = json.find("\"mutations\":[");
+    if (activatingField == std::string::npos || mutationsField == std::string::npos) return false;
+    plan = Plan{};
+    plan.modName = mod;
+    const std::filesystem::path modPath = Utf8Path(mod);
+    if (modPath.empty() || modPath.has_root_path() || modPath.filename() != modPath ||
+        mod == "." || mod == "..") return false;
+    const std::size_t boolPos = activatingField + std::strlen("\"activating\":");
+    plan.activating = json.compare(boolPos, 4, "true") == 0;
+    const std::size_t missingField = json.find("\"backupMissing\":");
+    if (missingField != std::string::npos) {
+        const std::size_t pos = missingField + std::strlen("\"backupMissing\":");
+        plan.backupMissing = json.compare(pos, 4, "true") == 0;
+    }
+    std::size_t pos = mutationsField + std::strlen("\"mutations\":[");
+    while (pos < json.size() && json[pos] != ']') {
+        if (json[pos] == ',') { ++pos; continue; }
+        if (json[pos++] != '{') return false;
+        Mutation mutation;
+        if (!ReadJsonString(json, "relative", pos, mutation.relative) ||
+            !ReadJsonString(json, "before", pos, mutation.expectedBefore) ||
+            !ReadJsonString(json, "after", pos, mutation.expectedAfter)) return false;
+        const std::filesystem::path relative = Utf8Path(mutation.relative);
+        if (relative.empty() || relative.has_root_path()) return false;
+        for (const auto& component : relative) {
+            if (component == "." || component == "..") return false;
+        }
+        const std::size_t objectEnd = json.find('}', pos);
+        if (objectEnd == std::string::npos) return false;
+        plan.mutations.push_back(std::move(mutation));
+        pos = objectEnd + 1;
+    }
+    return pos < json.size() && json[pos] == ']';
+}
 } // namespace
+
+Result ModService::Rollback(const Plan& plan) const {
+    Result result{true, kOk, {}, {}, {}};
+    auto fail = [&](const std::string& code, const std::string& detail) {
+        result.ok = false;
+        result.code = code;
+        if (!result.detail.empty()) result.detail += "; ";
+        result.detail += detail;
+    };
+    auto hashIfPresent = [&](const std::filesystem::path& path, bool& exists,
+                             std::string& hash) -> bool {
+        std::error_code ec;
+        const auto status = std::filesystem::symlink_status(path, ec);
+        if (ec == std::errc::no_such_file_or_directory) {
+            exists = false;
+            hash.clear();
+            return true;
+        }
+        if (ec) return false;
+        exists = std::filesystem::exists(status) || std::filesystem::is_symlink(status);
+        if (!exists) { hash.clear(); return true; }
+        try { hash = Sha256File(path); return true; }
+        catch (...) { return false; }
+    };
+
+    if (plan.activating) {
+        for (auto it = plan.mutations.rbegin(); it != plan.mutations.rend(); ++it) {
+            const Mutation& mutation = *it;
+            const auto target = m_installMods / mutation.relative;
+            const auto backed = m_backupRoot / plan.modName / mutation.relative;
+            bool targetExists = false, backupExists = false;
+            std::string targetHash, backupHash;
+            if (!hashIfPresent(target, targetExists, targetHash) ||
+                !hashIfPresent(backed, backupExists, backupHash)) {
+                fail(kInterrupted, "cannot inspect files while restoring " + mutation.relative);
+                continue;
+            }
+            if (mutation.expectedBefore.empty()) {
+                if (!targetExists) continue;
+                if (targetHash != mutation.expectedAfter) {
+                    result.userChanged.push_back(mutation.relative);
+                    fail(kUserChanged, "refusing to remove changed file " + mutation.relative);
+                    continue;
+                }
+                std::error_code ec;
+                std::filesystem::remove(target, ec);
+                if (ec) fail(kInterrupted, "cannot remove installed file " + mutation.relative);
+                continue;
+            }
+            if (targetExists && targetHash == mutation.expectedBefore) continue;
+            if (targetExists && targetHash != mutation.expectedAfter) {
+                result.userChanged.push_back(mutation.relative);
+                fail(kUserChanged, "refusing to overwrite changed file " + mutation.relative);
+                continue;
+            }
+            if (!backupExists || backupHash != mutation.expectedBefore) {
+                result.userChanged.push_back(mutation.relative);
+                fail(kInterrupted, "original backup is unavailable for " + mutation.relative);
+                continue;
+            }
+            std::error_code ec;
+            if (targetExists) std::filesystem::remove(target, ec);
+            if (!ec) std::filesystem::create_directories(target.parent_path(), ec);
+            if (!ec) std::filesystem::rename(backed, target, ec);
+            if (ec) fail(kInterrupted, "cannot restore original file " + mutation.relative);
+        }
+        // Activation moves the selected folder before touching overlay files.
+        // Put it back after the overlay is safe so the operation can be retried.
+        if (result.ok) {
+            const auto backup = m_backupRoot / plan.modName;
+            std::error_code ec;
+            if (std::filesystem::exists(backup, ec) && !ec) {
+                PruneEmptyDirs(backup);
+                if (!std::filesystem::is_empty(backup, ec) || ec) {
+                    fail(kInterrupted, "unexpected files remain in the activation backup folder");
+                } else {
+                    std::filesystem::remove(backup, ec);
+                    if (ec) fail(kInterrupted, "cannot remove the empty activation backup folder");
+                }
+            }
+        }
+        if (result.ok) {
+            const auto active = m_activeRoot / plan.modName;
+            const auto inactive = m_inactiveRoot / plan.modName;
+            std::error_code ec;
+            if (std::filesystem::exists(active, ec) && !ec) {
+                if (std::filesystem::exists(inactive, ec)) {
+                    fail(kInterrupted, "both active and inactive package folders exist");
+                } else {
+                    std::filesystem::rename(active, inactive, ec);
+                    if (ec) fail(kInterrupted, "cannot return package to inactive folder: " + ec.message());
+                }
+            }
+        }
+    } else if (!plan.backupMissing) {
+        auto active = m_activeRoot / plan.modName;
+        if (!std::filesystem::exists(active)) active = m_inactiveRoot / plan.modName;
+        for (auto it = plan.mutations.rbegin(); it != plan.mutations.rend(); ++it) {
+            const Mutation& mutation = *it;
+            const auto target = m_installMods / mutation.relative;
+            const auto backed = m_backupRoot / plan.modName / mutation.relative;
+            bool targetExists = false, backupExists = false;
+            std::string targetHash, backupHash;
+            if (!hashIfPresent(target, targetExists, targetHash) ||
+                !hashIfPresent(backed, backupExists, backupHash)) {
+                fail(kInterrupted, "cannot inspect files while restoring " + mutation.relative);
+                continue;
+            }
+            if (!targetExists || targetHash != mutation.expectedBefore) {
+                if (targetExists && targetHash != mutation.expectedAfter) {
+                    result.userChanged.push_back(mutation.relative);
+                    fail(kUserChanged, "refusing to overwrite changed file " + mutation.relative);
+                    continue;
+                }
+                if (!mutation.expectedAfter.empty()) {
+                    if (backupExists && backupHash != mutation.expectedAfter) {
+                        fail(kInterrupted, "backup changed for " + mutation.relative);
+                        continue;
+                    }
+                    if (!backupExists && (!targetExists || targetHash != mutation.expectedAfter)) {
+                        fail(kInterrupted, "original backup is unavailable for " + mutation.relative);
+                        continue;
+                    }
+                    if (targetExists && !backupExists) {
+                        std::error_code ec;
+                        std::filesystem::create_directories(backed.parent_path(), ec);
+                        if (!ec) std::filesystem::rename(target, backed, ec);
+                        if (ec) { fail(kInterrupted, "cannot return backup for " + mutation.relative); continue; }
+                        targetExists = false;
+                    } else if (targetExists && backupExists) {
+                        std::error_code ec;
+                        std::filesystem::remove(target, ec);
+                        if (ec) { fail(kInterrupted, "cannot clear restored file " + mutation.relative); continue; }
+                        targetExists = false;
+                    }
+                } else if (targetExists) {
+                    std::error_code ec;
+                    std::filesystem::remove(target, ec);
+                    if (ec) { fail(kInterrupted, "cannot remove mod file " + mutation.relative); continue; }
+                    targetExists = false;
+                }
+                if (!targetExists) {
+                    const auto source = active / mutation.relative;
+                    try {
+                        if (Sha256File(source) != mutation.expectedBefore) {
+                            fail(kInterrupted, "active package bytes changed for " + mutation.relative);
+                            continue;
+                        }
+                    } catch (...) {
+                        fail(kInterrupted, "active package file is unavailable: " + mutation.relative);
+                        continue;
+                    }
+                    std::error_code ec;
+                    std::filesystem::create_directories(target.parent_path(), ec);
+                    if (!ec && m_mode == OverlayMode::Symlink)
+                        std::filesystem::create_symlink(source, target, ec);
+                    else if (!ec)
+                        std::filesystem::copy_file(source, target, std::filesystem::copy_options::overwrite_existing, ec);
+                    if (ec) fail(kInterrupted, "cannot restore mod file " + mutation.relative);
+                }
+            }
+        }
+        if (result.ok && !plan.conflictingMods.empty()) {
+            std::ofstream ledger(m_inactiveRoot / kConflictFile,
+                                 std::ios::binary | std::ios::trunc);
+            for (const std::string& name : plan.conflictingMods) ledger << name << "\n";
+            if (!ledger) fail(kInterrupted, "cannot restore conflict ledger");
+        }
+    }
+    if (!result.ok) result.detail = "rollback incomplete: " + result.detail;
+    return result;
+}
 
 Result ModService::Commit(const Plan& plan, Progress progress, Cancelled cancelled) {
     if (plan.activating && !plan.conflictingMods.empty() && !plan.conflictOverride) {
@@ -645,7 +899,16 @@ Result ModService::Commit(const Plan& plan, Progress progress, Cancelled cancell
     if (result.ok) {
         JournalAppend("done", plan, result.committed);
     } else {
-        JournalAppend("abort", plan, result.committed);
+        const Result rollback = Rollback(plan);
+        if (rollback.ok) {
+            JournalAppend("abort", plan, result.committed);
+        } else {
+            result.code = rollback.code;
+            result.detail += (result.detail.empty() ? "" : "; ") + rollback.detail;
+            result.userChanged.insert(result.userChanged.end(), rollback.userChanged.begin(),
+                                      rollback.userChanged.end());
+            // Keep the plan open so Recover can retry without overwriting edits.
+        }
     }
     return result;
 }
@@ -685,6 +948,15 @@ Result ModService::CommitActivate(const Plan& plan, Progress progress, Cancelled
     // When the source had no dvdroot wrapper, `active` now holds the
     // content directly; otherwise rename() moved the content dir itself.
     const std::filesystem::path activeContent = active;
+
+    // An empty backup folder records that this activation had no original
+    // overlay files. Without it, deactivation would mistake a clean install
+    // for a manually deleted backup and leave the mod's added files behind.
+    std::filesystem::create_directories(backup, ec);
+    if (ec) {
+        return Result{false, kFilesystemError,
+                      "could not create the mod backup folder: " + ec.message(), {}, {}};
+    }
 
     const std::size_t total = plan.mutations.size();
     std::size_t done = 0;
@@ -804,6 +1076,58 @@ Result ModService::CommitDeactivate(const Plan& plan, Progress progress, Cancell
         return result;
     }
 
+    // Confirm every overlay and backup still matches the plan before the
+    // first destructive step. This keeps edits made after planning intact.
+    auto pathExists = [](const std::filesystem::path& path, bool& exists,
+                         std::error_code& error) {
+        const auto status = std::filesystem::symlink_status(path, error);
+        if (error == std::errc::no_such_file_or_directory) {
+            error.clear();
+            exists = false;
+            return true;
+        }
+        if (error) return false;
+        exists = std::filesystem::exists(status) || std::filesystem::is_symlink(status);
+        return true;
+    };
+    for (const Mutation& mutation : plan.mutations) {
+        const auto target = m_installMods / mutation.relative;
+        const auto backed = backup / mutation.relative;
+        std::error_code checkEc;
+        bool targetExists = false;
+        if (!pathExists(target, targetExists, checkEc))
+            return Result{false, kFilesystemError, checkEc.message(), {}, {}};
+        std::string targetHash;
+        if (targetExists) {
+            try { targetHash = Sha256File(target); }
+            catch (const std::exception& ex) {
+                return Result{false, kFilesystemError, ex.what(), {}, {}};
+            }
+        }
+        if (targetHash != mutation.expectedBefore) {
+            return Result{false, kUserChanged,
+                          "overlay changed since planning, refusing to overwrite: " +
+                              mutation.relative,
+                          {}, {mutation.relative}};
+        }
+        bool backupExists = false;
+        if (!pathExists(backed, backupExists, checkEc))
+            return Result{false, kFilesystemError, checkEc.message(), {}, {}};
+        std::string backupHash;
+        if (backupExists) {
+            try { backupHash = Sha256File(backed); }
+            catch (const std::exception& ex) {
+                return Result{false, kFilesystemError, ex.what(), {}, {}};
+            }
+        }
+        if (backupHash != mutation.expectedAfter) {
+            return Result{false, kUserChanged,
+                          "backup changed since planning, refusing to overwrite: " +
+                              mutation.relative,
+                          {}, {mutation.relative}};
+        }
+    }
+
     const std::size_t total = plan.mutations.size() * 2;
     std::size_t done = 0;
     auto report = [&]() {
@@ -897,7 +1221,7 @@ Result ModService::Recover(Progress progress, Cancelled cancelled) {
     if (!journal) {
         return Result{true, kOk, "no interrupted activation", {}, {}};
     }
-    // Find the last plan without a matching done/abort: minimal replay.
+    // Find the last plan without a matching done/abort.
     std::string line, lastPlan;
     while (std::getline(journal, line)) {
         if (line.find("\"kind\":\"plan\"") != std::string::npos) {
@@ -910,11 +1234,22 @@ Result ModService::Recover(Progress progress, Cancelled cancelled) {
     if (lastPlan.empty()) {
         return Result{true, kOk, "no interrupted activation", {}, {}};
     }
-    return Result{false, kInterrupted,
-                  "interrupted activation found; re-run the activation to resume or restore. "
-                  "Journal: " +
-                      PathToUtf8(m_journalPath),
-                  {}, {}};
+    Plan plan;
+    if (!ParsePlanRecord(lastPlan, plan)) {
+        return Result{false, kInterrupted,
+                      "interrupted transaction journal is malformed and was left untouched: " +
+                          PathToUtf8(m_journalPath),
+                      {}, {}};
+    }
+    Result restored = Rollback(plan);
+    if (restored.ok) {
+        JournalAppend("abort", plan, restored.committed);
+        restored.detail = "interrupted transaction rolled back";
+        return restored;
+    }
+    restored.detail += ". Journal retained for another recovery attempt: " +
+                       PathToUtf8(m_journalPath);
+    return restored;
 }
 
 Result ModService::ResetInstallation(Progress progress, Cancelled cancelled) {

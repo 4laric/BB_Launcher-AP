@@ -6,6 +6,7 @@
 // plan/commit/deactivate/conflict/reset/recovery against fixture trees.
 
 #include <cassert>
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -176,6 +177,88 @@ int main() {
         CHECK(ReadFile(fx.installMods / "sfx" / "keep.sfx") == "user edit");
     }
 
+    // Deactivation also refuses to overwrite an overlay edit made after planning.
+    {
+        Fixture fx("deactivate-userchange");
+        WriteFile(fx.installMods / "sfx" / "file.sfx", "vanilla");
+        WriteFile(fx.inactive / "Pack" / "sfx" / "file.sfx", "mod");
+        modservice::ModService service = fx.Service();
+        modservice::Plan up;
+        CHECK(service.PlanActivate("Pack", up).ok && service.Commit(up).ok);
+        modservice::Plan down;
+        CHECK(service.PlanDeactivate("Pack", down).ok);
+        WriteFile(fx.installMods / "sfx" / "file.sfx", "user edit");
+        const modservice::Result refused = service.Commit(down);
+        CHECK(!refused.ok && refused.code == modservice::kUserChanged);
+        CHECK(ReadFile(fx.installMods / "sfx" / "file.sfx") == "user edit");
+        CHECK(ReadFile(fx.backup / "Pack" / "sfx" / "file.sfx") == "vanilla");
+    }
+
+    // Cancellation during deactivation restores the pre-operation overlay and backups.
+    {
+        Fixture fx("deactivate-cancel");
+        WriteFile(fx.installMods / "sfx" / "common.sfx", "vanilla");
+        WriteFile(fx.inactive / "Pack" / "sfx" / "common.sfx", "mod-common");
+        WriteFile(fx.inactive / "Pack" / "sfx" / "added.sfx", "mod-added");
+        modservice::ModService service = fx.Service();
+        modservice::Plan up;
+        CHECK(service.PlanActivate("Pack", up).ok && service.Commit(up).ok);
+        modservice::Plan down;
+        CHECK(service.PlanDeactivate("Pack", down).ok);
+        bool cancel = false;
+        const modservice::Result undone = service.Commit(
+            down, [&](std::size_t done, std::size_t) {
+                if (done == down.mutations.size()) cancel = true;
+            }, [&] { return cancel; });
+        CHECK(!undone.ok && undone.code == modservice::kCancelled);
+        CHECK(ReadFile(fx.installMods / "sfx" / "common.sfx") == "mod-common");
+        CHECK(ReadFile(fx.installMods / "sfx" / "added.sfx") == "mod-added");
+        CHECK(ReadFile(fx.backup / "Pack" / "sfx" / "common.sfx") == "vanilla");
+        CHECK(fs::is_directory(fx.active / "Pack"));
+        const auto recovered = service.Recover();
+        CHECK(recovered.ok); // a clean rollback closes the journal
+    }
+
+    // Failed activation rollback retains its journal and never overwrites an edit;
+    // recovery succeeds once the file returns to one of the recorded byte states.
+    {
+        Fixture fx("recover-activation");
+        WriteFile(fx.installMods / "sfx" / "common.sfx", "vanilla");
+        WriteFile(fx.inactive / "Pack" / "sfx" / "common.sfx", "mod-common");
+        WriteFile(fx.inactive / "Pack" / "sfx" / "extra.sfx", "mod-extra");
+        modservice::ModService service = fx.Service();
+        modservice::Plan plan;
+        CHECK(service.PlanActivate("Pack", plan).ok);
+        bool changed = false;
+        const std::string first = plan.mutations.front().relative;
+        const modservice::Result cancelled = service.Commit(
+            plan, [&](std::size_t done, std::size_t) {
+                if (done == 1) {
+                    WriteFile(fx.installMods / fs::path(first), "user edit");
+                    changed = true;
+                }
+            }, [&] { return changed; });
+        CHECK(!cancelled.ok && cancelled.code == modservice::kUserChanged);
+        CHECK(ReadFile(fx.installMods / fs::path(first)) == "user edit");
+        const modservice::Result refused = service.Recover();
+        CHECK(!refused.ok && refused.code == modservice::kUserChanged);
+        CHECK(ReadFile(fx.installMods / fs::path(first)) == "user edit");
+        const auto changedMutation = std::find_if(plan.mutations.begin(), plan.mutations.end(),
+            [&](const modservice::Mutation& mutation) { return mutation.relative == first; });
+        CHECK(changedMutation != plan.mutations.end());
+        if (changedMutation != plan.mutations.end()) {
+            WriteFile(fx.installMods / fs::path(first),
+                      first == "sfx/common.sfx" ? "mod-common" : "mod-extra");
+        }
+        const auto recovered = service.Recover();
+        CHECK(recovered.ok);
+        if (first == "sfx/common.sfx")
+            CHECK(ReadFile(fx.installMods / fs::path(first)) == "vanilla");
+        else
+            CHECK(!fs::exists(fx.installMods / fs::path(first)));
+        CHECK(fs::is_directory(fx.inactive / "Pack"));
+    }
+
     // Reset returns every active package and clears overlay state.
     {
         Fixture fx("reset");
@@ -205,6 +288,27 @@ int main() {
         const modservice::Result undone = service.Commit(down);
         CHECK(undone.ok);
         CHECK(fs::is_directory(fx.inactive / "Solo"));
+    }
+
+    // An empty backup folder is a valid activation state: deactivation removes
+    // mod-added files even when there were no original overlay files to save.
+    {
+        Fixture fx("added-file-only");
+        WriteFile(fx.inactive / "Pack" / "sfx" / "added.sfx", "mod-only");
+        modservice::ModService service = fx.Service();
+        modservice::Plan up;
+        CHECK(service.PlanActivate("Pack", up).ok);
+        CHECK(service.Commit(up).ok);
+        CHECK(fs::is_directory(fx.backup / "Pack"));
+        CHECK(ReadFile(fx.installMods / "sfx" / "added.sfx") == "mod-only");
+
+        modservice::Plan down;
+        CHECK(service.PlanDeactivate("Pack", down).ok);
+        CHECK(!down.backupMissing);
+        CHECK(service.Commit(down).ok);
+        CHECK(!fs::exists(fx.installMods / "sfx" / "added.sfx"));
+        CHECK(!fs::exists(fx.backup / "Pack"));
+        CHECK(fs::is_directory(fx.inactive / "Pack"));
     }
 
     if (g_failures == 0) {

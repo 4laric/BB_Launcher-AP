@@ -18,11 +18,15 @@
 
 #include <QComboBox>
 #include <QDialog>
+#include <QCloseEvent>
+#include <QCheckBox>
+#include <QGroupBox>
 #include <QLabel>
 #include <QLineEdit>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QTimer>
+#include <QToolButton>
 
 #include "ApCoordinator.h"
 
@@ -52,6 +56,8 @@ class ApPage : public QDialog {
     void ShowError(const QString& detail);
     bool EnsureConfigured(QString* error);
     void RefreshForSession();
+    void RefreshEnemizerControls();
+    void closeEvent(QCloseEvent* event) override;
 
     ApCoordinator* m_coordinator;
     QLabel* m_setupLabel = nullptr;
@@ -62,6 +68,18 @@ class ApPage : public QDialog {
     QLineEdit* m_serverEdit = nullptr;
     QLabel* m_passwordLabel = nullptr;
     QLineEdit* m_passwordEdit = nullptr;
+    QGroupBox* m_enemizerGroup = nullptr;
+    QCheckBox* m_randomizeEnemies = nullptr;
+    QLineEdit* m_enemySeedEdit = nullptr;
+    QGroupBox* m_expandedCoverage = nullptr;
+    QCheckBox* m_releaseContracts = nullptr;
+    QCheckBox* m_releaseSpawns = nullptr;
+    QCheckBox* m_releaseChara = nullptr;
+    QToolButton* m_advancedEnemyOptions = nullptr;
+    QWidget* m_advancedEnemyPanel = nullptr;
+    QCheckBox* m_allowTierMixing = nullptr;
+    QCheckBox* m_preserveLocomotion = nullptr;
+    QCheckBox* m_normalizeScaling = nullptr;
     QPushButton* m_playButton = nullptr;
     QPushButton* m_cancelButton = nullptr;
     QPushButton* m_switchSeedButton = nullptr;
@@ -71,4 +89,6 @@ class ApPage : public QDialog {
     QTimer* m_pollTimer = nullptr;
     bool m_cancelled = false;
     bool m_inspecting = false;
+    bool m_busy = false;
+    QList<QWidget*> m_operationControls;
 };

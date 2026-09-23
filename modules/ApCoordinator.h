@@ -32,6 +32,28 @@ struct ApPlayRequest {
     QString playerName;
     QString server;
     QString password; // request bodies only; never logged, never in argv
+    struct Enemizer {
+        bool enabled = false;
+        QString seed;
+        bool allowTierMixing = false;
+        bool preserveLocomotion = false;
+        bool normalizeScaling = false;
+        bool bossCanary = false;
+        QString bossPool;
+        bool releaseContracts = false;
+        bool releaseSpawns = false;
+        bool releaseChara = false;
+    } enemizer;
+};
+
+// Managed by the AP coordinator in copy mode. The default paths match the
+// regular Mod Manager; explicit roots also let embedders and tests isolate
+// an AP session without touching a user's install.
+struct ApModRoots {
+    QString inactive;
+    QString active;
+    QString overlay;
+    QString backups;
 };
 
 class ApCoordinator : public QObject {
@@ -45,7 +67,12 @@ class ApCoordinator : public QObject {
     // holding the backend bundle (suppression data, client); stateRoot:
     // launcher state root for plays/arms/journal/supervisor.
     bool Configure(const QString& gameRoot, const QString& backendDir,
-                   const QString& stateRoot, QString* error);
+                   const QString& stateRoot, QString* error,
+                   const ApModRoots& roots = {});
+
+    bool InspectSeed(const QString& seedPath, const QString& playerName,
+                     ApResponse* response, QString* error);
+    void RequestCancel();
 
     // Installs itself as the emulator preflight handler while a session
     // is armed or playing. Every startup route (Play, Restart, IPC,
@@ -56,6 +83,7 @@ class ApCoordinator : public QObject {
     modservice::ModService* modService() const { return m_mods.get(); }
 
     bool HasSession() const { return !m_playId.isEmpty(); }
+    bool GameStarted() const { return m_gameIdentity.valid; }
     bool IsPlaying() const { return m_playing; }
     QString playId() const { return m_playId; }
     QString armId() const { return m_armId; }
@@ -75,6 +103,7 @@ class ApCoordinator : public QObject {
         QString server;
         QString title;
         bool reused = false;
+        QString enemySummary;
     };
     bool Prepare(const ApPlayRequest& request, Prepared* prepared, QString* error);
     // Activates the prepared package through ModService (copy). When a
@@ -87,9 +116,12 @@ class ApCoordinator : public QObject {
     bool Arm(const Prepared& prepared, QString* error);
     bool StartGame(QString* error);
     bool Connect(QString* error);
+    bool ReturnToGame(QString* error);
+    bool GameClosed(QString* error);
     QString lastErrorCode() const { return m_lastErrorCode; }
     bool RefreshStatus(QString* stateOut, QString* error);
     bool SwitchToRegularPlay(QString* error);
+    bool SwitchToSeed(QString* error);
     void ResetSession();
 
   signals:
@@ -97,6 +129,7 @@ class ApCoordinator : public QObject {
 
   private:
     bool EnsureBackend(QString* error);
+    bool StopSessionAndDeactivate(QString* error);
     EmulatorService* m_emu = nullptr;
     std::unique_ptr<ApBackend> m_backend;
     std::unique_ptr<modservice::ModService> m_mods;
@@ -107,6 +140,8 @@ class ApCoordinator : public QObject {
     QString m_armId;
     QString m_sessionId;
     QString m_title;
+    QString m_packageName;
+    ApModRoots m_modRoots;
     EmulatorProcessIdentity m_gameIdentity;
     QString m_lastErrorCode;
     bool m_playing = false;

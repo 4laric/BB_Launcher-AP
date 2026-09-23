@@ -6,6 +6,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <iterator>
 
 #include "ApFork.h"
 #include "modules/Common.h"
@@ -14,9 +15,8 @@
 namespace {
 QString ModsRootFor(const QString& gameRoot) {
     // Mirrors ModManager's root computation: the BBLauncher Mods dir.
-    return Common::ModPath.is_absolute()
-               ? QString::fromStdWString(Common::ModPath.wstring())
-               : QString();
+    const std::filesystem::path mods = Common::GetBBLFilesPath() / "Mods";
+    return mods.is_absolute() ? QString::fromStdWString(mods.wstring()) : QString();
 }
 
 QString InstallNameFor(const QString& gameRoot) {
@@ -29,38 +29,78 @@ ApCoordinator::ApCoordinator(EmulatorService* emulator, QObject* parent)
     : QObject(parent), m_emu(emulator) {}
 
 bool ApCoordinator::Configure(const QString& gameRoot, const QString& backendDir,
-                              const QString& stateRoot, QString* error) {
-    m_gameRoot = gameRoot;
-    m_backendDir = backendDir;
-    m_stateRoot = stateRoot;
+                              const QString& stateRoot, QString* error,
+                              const ApModRoots& requestedRoots) {
+    ApModRoots roots = requestedRoots;
     const QString installName = InstallNameFor(gameRoot);
     const QFileInfo gameInfo(gameRoot);
     const QString gameParent = gameInfo.absolutePath();
+    if (roots.inactive.isEmpty()) roots.inactive = ModsRootFor(gameRoot);
+    if (roots.active.isEmpty()) {
+        roots.active = QFileInfo(Common::GetBBLFilesPath()).absoluteFilePath() +
+                       QStringLiteral("/Mods-Active (DO NOT DELETE)");
+    }
+    if (roots.overlay.isEmpty()) {
+        roots.overlay = gameParent + QStringLiteral("/") + installName +
+                        QStringLiteral("-mods/dvdroot_ps4");
+    }
+    if (roots.backups.isEmpty()) {
+        roots.backups = gameParent + QStringLiteral("/") + installName +
+                        QStringLiteral("-modsBACKUP");
+    }
+    const bool sameConfiguration = gameRoot == m_gameRoot && backendDir == m_backendDir &&
+                                   stateRoot == m_stateRoot && m_mods != nullptr &&
+                                   roots.inactive == m_modRoots.inactive &&
+                                   roots.active == m_modRoots.active &&
+                                   roots.overlay == m_modRoots.overlay &&
+                                   roots.backups == m_modRoots.backups;
+    if (!m_gameRoot.isEmpty() && !sameConfiguration &&
+        (m_playing || !m_armId.isEmpty() || !m_sessionId.isEmpty())) {
+        if (error != nullptr) {
+            *error = tr("Stop the current Archipelago session before changing its configuration.");
+        }
+        return false;
+    }
     // Managed roots mirror the Mod Manager layout exactly so both UIs
     // share one activation owner: inactive Mods, active Mods, overlay,
     // backups. Mode is always copy for AP.
-    const QString inactive = ModsRootFor(gameRoot);
+    const QString inactive = roots.inactive;
     if (inactive.isEmpty()) {
         if (error != nullptr) {
             *error = QStringLiteral("BBLauncher Mods directory is not configured");
         }
         return false;
     }
-    const QString active =
-        QFileInfo(Common::GetBBLFilesPath()).absoluteFilePath() +
-        QStringLiteral("/Mods-Active (DO NOT DELETE)");
-    const QString overlay = gameParent + QStringLiteral("/") + installName + QStringLiteral("-mods/dvdroot_ps4");
-    const QString backups = gameParent + QStringLiteral("/") + installName + QStringLiteral("-modsBACKUP");
     const QString journal = stateRoot + QStringLiteral("/integrated/cxx-journal");
-    m_mods = std::make_unique<modservice::ModService>(
-        inactive.toStdWString(), active.toStdWString(), overlay.toStdWString(),
-        backups.toStdWString(), modservice::OverlayMode::Copy, journal.toStdWString());
-    ResetSession();
+    if (!sameConfiguration) {
+        if (m_backend != nullptr && m_backend->IsRunning()) {
+            m_backend->Stop();
+        }
+        m_gameRoot = gameRoot;
+        m_backendDir = backendDir;
+        m_stateRoot = stateRoot;
+        m_mods = std::make_unique<modservice::ModService>(
+            roots.inactive.toStdWString(), roots.active.toStdWString(),
+            roots.overlay.toStdWString(), roots.backups.toStdWString(),
+            modservice::OverlayMode::Copy, journal.toStdWString());
+        m_modRoots = roots;
+        ResetSession();
+    }
+    // A failed recovery must be retried on the next Configure call. The
+    // configuration may already be cached even though its journal remains
+    // unresolved, so recovery cannot be limited to service construction.
+    const modservice::Result recovered = m_mods->Recover();
+    if (!recovered.ok) {
+        if (error != nullptr) {
+            *error = QString::fromStdString(recovered.detail);
+        }
+        return false;
+    }
     if (m_emu != nullptr) {
         m_emu->setPreflightHandler(
             [this](const QString& action) { return Preflight(action); });
     }
-    return true;
+    return EnsureBackend(error);
 }
 
 QString ApCoordinator::Preflight(const QString& action) {
@@ -93,6 +133,34 @@ bool ApCoordinator::EnsureBackend(QString* error) {
     return m_backend->Start(m_stateRoot, error);
 }
 
+void ApCoordinator::RequestCancel() {
+    if (m_backend != nullptr) {
+        m_backend->RequestCancel();
+    }
+}
+
+bool ApCoordinator::InspectSeed(const QString& seedPath, const QString& playerName,
+                                ApResponse* response, QString* error) {
+    if (!EnsureBackend(error)) {
+        return false;
+    }
+    QJsonObject params{{QStringLiteral("seed_path"), seedPath}};
+    if (!playerName.isEmpty()) {
+        params.insert(QStringLiteral("player_name"), playerName);
+    }
+    ApResponse seen = m_backend->Call(QStringLiteral("inspect_seed"), params, 30000);
+    if (response != nullptr) {
+        *response = seen;
+    }
+    if (!seen.ok) {
+        if (error != nullptr) {
+            *error = seen.error.detail;
+        }
+        return false;
+    }
+    return true;
+}
+
 bool ApCoordinator::Prepare(const ApPlayRequest& request, Prepared* prepared,
                             QString* error) {
     emit StageChanged(tr("Preparing your seed"));
@@ -101,14 +169,14 @@ bool ApCoordinator::Prepare(const ApPlayRequest& request, Prepared* prepared,
     }
     // Inspect first so single-slot seeds skip the player question and
     // multi-slot seeds fail closed with a named choice.
-    QJsonObject inspect{{QStringLiteral("seed_path"), request.seedPath}};
-    if (!request.playerName.isEmpty()) {
-        inspect.insert(QStringLiteral("player_name"), request.playerName);
+    ApResponse seen;
+    if (!InspectSeed(request.seedPath, request.playerName, &seen, error)) {
+        return false;
     }
-    ApResponse seen = m_backend->Call(QStringLiteral("inspect_seed"), inspect, 30000);
-    if (!seen.ok) {
+    if (seen.result.value(QStringLiteral("needs_choice")).toBool() &&
+        request.playerName.isEmpty()) {
         if (error != nullptr) {
-            *error = seen.error.detail;
+            *error = tr("Choose a player for this seed, then press Play.");
         }
         return false;
     }
@@ -137,6 +205,21 @@ bool ApCoordinator::Prepare(const ApPlayRequest& request, Prepared* prepared,
         {QStringLiteral("ap_client"), client},
         {QStringLiteral("suppression_dir"), m_backendDir + QStringLiteral("/suppression")},
         {QStringLiteral("cache_root"), m_stateRoot + QStringLiteral("/cache")},
+        {QStringLiteral("enemizer"),
+         QJsonObject{{QStringLiteral("enabled"), request.enemizer.enabled},
+                     {QStringLiteral("seed"), request.enemizer.seed.isEmpty()
+                                                  ? QJsonValue(QJsonValue::Null)
+                                                  : QJsonValue(request.enemizer.seed)},
+                     {QStringLiteral("allow_tier_mixing"), request.enemizer.allowTierMixing},
+                     {QStringLiteral("preserve_locomotion"), request.enemizer.preserveLocomotion},
+                     {QStringLiteral("normalize_scaling"), request.enemizer.normalizeScaling},
+                     {QStringLiteral("boss_canary"), request.enemizer.bossCanary},
+                     {QStringLiteral("boss_pool"), request.enemizer.bossPool.isEmpty()
+                                                       ? QJsonValue(QJsonValue::Null)
+                                                       : QJsonValue(request.enemizer.bossPool)},
+                     {QStringLiteral("release_contracts"), request.enemizer.releaseContracts},
+                     {QStringLiteral("release_spawns"), request.enemizer.releaseSpawns},
+                     {QStringLiteral("release_chara"), request.enemizer.releaseChara}}},
     };
     if (!request.password.isEmpty()) {
         params.insert(QStringLiteral("password"), request.password);
@@ -157,21 +240,36 @@ bool ApCoordinator::Prepare(const ApPlayRequest& request, Prepared* prepared,
         return false;
     }
     m_playId = response.result.value(QStringLiteral("play_id")).toString();
+    m_packageName = response.result.value(QStringLiteral("package_name")).toString();
     const QJsonObject display = response.result.value(QStringLiteral("display")).toObject();
     if (prepared != nullptr) {
         prepared->playId = m_playId;
         prepared->packageName =
             response.result.value(QStringLiteral("package_name")).toString();
-        if (prepared->packageName.isEmpty()) {
-            // The display title carries seed/slot when the package was
-            // reused; fall back to the inactive-list match below.
-            prepared->packageName = display.value(QStringLiteral("title")).toString();
-        }
         prepared->seed = display.value(QStringLiteral("seed")).toString();
         prepared->slot = display.value(QStringLiteral("slot")).toString();
         prepared->server = display.value(QStringLiteral("server")).toString();
         prepared->title = display.value(QStringLiteral("title")).toString();
         prepared->reused = response.result.value(QStringLiteral("reused")).toBool();
+        const QJsonObject enemy = response.result.value(QStringLiteral("enemizer")).toObject();
+        if (enemy.value(QStringLiteral("enabled")).toBool()) {
+            QStringList details;
+            const QJsonValue swaps = enemy.value(QStringLiteral("swap_count"));
+            const QJsonValue mapFiles = enemy.value(QStringLiteral("map_file_count"));
+            const QJsonValue aiFiles = enemy.value(QStringLiteral("ai_file_count"));
+            if (swaps.isDouble()) {
+                details.push_back(tr("%1 enemy swaps").arg(swaps.toInt()));
+            }
+            if (mapFiles.isDouble()) {
+                details.push_back(tr("%1 map files").arg(mapFiles.toInt()));
+            }
+            if (aiFiles.isDouble()) {
+                details.push_back(tr("%1 AI files").arg(aiFiles.toInt()));
+            }
+            if (!details.isEmpty()) {
+                prepared->enemySummary = tr("Enemy randomization: %1.").arg(details.join(tr(", ")));
+            }
+        }
     }
     m_title = display.value(QStringLiteral("title")).toString();
     m_playing = false;
@@ -188,6 +286,12 @@ bool ApCoordinator::Activate(const Prepared& prepared, bool allowDisableConflict
     if (!m_mods) {
         if (error != nullptr) {
             *error = tr("Archipelago is not configured for this installation");
+        }
+        return false;
+    }
+    if (m_emu != nullptr && m_emu->IsEmulatorRunning()) {
+        if (error != nullptr) {
+            *error = tr("Close the emulator before switching to an Archipelago seed. The active package was left unchanged.");
         }
         return false;
     }
@@ -255,6 +359,17 @@ bool ApCoordinator::Activate(const Prepared& prepared, bool allowDisableConflict
                 return false;
             }
         }
+        // Deactivation restores the bytes underneath each conflicting mod.
+        // The original activation plan fingerprinted the conflicting bytes,
+        // so discard it and plan against the now-restored overlay.
+        planned = m_mods->PlanActivate(package.toStdString(), plan);
+        if (!planned.ok) {
+            if (error != nullptr) {
+                *error = QString::fromStdString(planned.detail);
+            }
+            return false;
+        }
+        plan.conflictOverride = true;
     } else if (!planned.ok) {
         if (error != nullptr) {
             *error = QString::fromStdString(planned.detail);
@@ -359,6 +474,43 @@ bool ApCoordinator::Connect(QString* error) {
     return true;
 }
 
+bool ApCoordinator::ReturnToGame(QString* error) {
+    if (!m_gameIdentity.valid || m_emu == nullptr) {
+        if (error != nullptr) {
+            *error = tr("The Archipelago game window is not available yet.");
+        }
+        return false;
+    }
+    return m_emu->Focus(m_gameIdentity, error);
+}
+
+bool ApCoordinator::GameClosed(QString* error) {
+    if (!m_sessionId.isEmpty()) {
+        if (m_backend == nullptr || !m_backend->IsRunning()) {
+            if (error != nullptr) {
+                *error = tr("The Archipelago backend is unavailable; its client could not be stopped.");
+            }
+            return false;
+        }
+        ApResponse stopped = m_backend->Call(
+            QStringLiteral("stop_client"),
+            QJsonObject{{QStringLiteral("session_id"), m_sessionId}}, 30000);
+        if (!stopped.ok || !stopped.result.value(QStringLiteral("stopped")).toBool()) {
+            if (error != nullptr) {
+                *error = stopped.ok
+                             ? tr("The Archipelago client could not be verified as stopped; the active package was left in place.")
+                             : stopped.error.detail;
+            }
+            return false;
+        }
+    }
+    m_sessionId.clear();
+    m_armId.clear();
+    m_gameIdentity = EmulatorProcessIdentity{};
+    m_playing = false;
+    return true;
+}
+
 bool ApCoordinator::RefreshStatus(QString* stateOut, QString* error) {
     if (!m_backend || !m_backend->IsRunning() || m_playId.isEmpty()) {
         return false;
@@ -381,19 +533,53 @@ bool ApCoordinator::RefreshStatus(QString* stateOut, QString* error) {
 }
 
 bool ApCoordinator::SwitchToRegularPlay(QString* error) {
-    // Removes the AP package through the same service and retains
-    // unrelated mods. Never called "vanilla" while other mods remain.
-    if (m_backend && !m_sessionId.isEmpty()) {
-        m_backend->Call(QStringLiteral("stop_client"),
-                        QJsonObject{{QStringLiteral("session_id"), m_sessionId}}, 15000);
+    return StopSessionAndDeactivate(error);
+}
+
+bool ApCoordinator::SwitchToSeed(QString* error) {
+    return StopSessionAndDeactivate(error);
+}
+
+bool ApCoordinator::StopSessionAndDeactivate(QString* error) {
+    // Stop the AP client and the exact game instance started by this
+    // coordinator before allowing ModService to change the live overlay.
+    if (!m_sessionId.isEmpty()) {
+        if (!m_backend || !m_backend->IsRunning()) {
+            if (error != nullptr) {
+                *error = tr("The Archipelago backend is unavailable; the game setup was left unchanged.");
+            }
+            return false;
+        }
+        ApResponse stopped = m_backend->Call(
+            QStringLiteral("stop_client"),
+            QJsonObject{{QStringLiteral("session_id"), m_sessionId}}, 30000);
+        if (!stopped.ok || !stopped.result.value(QStringLiteral("stopped")).toBool()) {
+            if (error != nullptr) {
+                *error = stopped.ok
+                             ? tr("The Archipelago client could not be verified as stopped.")
+                             : stopped.error.detail;
+            }
+            return false;
+        }
     }
-    ResetSession();
+    if (m_gameIdentity.valid) {
+        if (m_emu == nullptr || !m_gameIdentity.valid) {
+            if (error != nullptr) {
+                *error = tr("The game instance cannot be verified, so its active overlay was left untouched.");
+            }
+            return false;
+        }
+        if (!m_emu->Stop(m_gameIdentity, error)) {
+            return false;
+        }
+    }
     if (m_mods) {
-        for (const std::string& name : m_mods->ActiveMods()) {
-            const QString mod = QString::fromStdString(name);
-            if (mod.startsWith(QStringLiteral("Archipelago-"))) {
+        const auto activeMods = m_mods->ActiveMods();
+        for (auto it = activeMods.rbegin(); it != activeMods.rend(); ++it) {
+            const QString mod = QString::fromStdString(*it);
+            if (mod == m_packageName || mod.startsWith(QStringLiteral("Archipelago-"))) {
                 modservice::Plan down;
-                modservice::Result will = m_mods->PlanDeactivate(name, down);
+                modservice::Result will = m_mods->PlanDeactivate(*it, down);
                 if (!will.ok) {
                     if (error != nullptr) {
                         *error = QString::fromStdString(will.detail);
@@ -410,6 +596,7 @@ bool ApCoordinator::SwitchToRegularPlay(QString* error) {
             }
         }
     }
+    ResetSession();
     return true;
 }
 
@@ -418,6 +605,7 @@ void ApCoordinator::ResetSession() {
     m_armId.clear();
     m_sessionId.clear();
     m_title.clear();
+    m_packageName.clear();
     m_gameIdentity = EmulatorProcessIdentity{};
     m_playing = false;
 }

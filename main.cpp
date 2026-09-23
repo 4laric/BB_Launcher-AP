@@ -14,6 +14,7 @@
 #endif
 
 #include "modules/RunGuard.h"
+#include "modules/ApFork.h"
 #include "modules/bblauncher.h"
 
 void customMessageHandler(QtMsgType, const QMessageLogContext&, const QString&) {}
@@ -21,10 +22,6 @@ void customMessageHandler(QtMsgType, const QMessageLogContext&, const QString&) 
 int main(int argc, char* argv[]) {
 #ifdef Q_OS_MAC
     qputenv("QT_WEBVIEW_PLUGIN", "native");
-#endif
-
-#ifndef USE_WEBENGINE
-    QtWebView::initialize();
 #endif
 
     QApplication a(argc, argv);
@@ -40,10 +37,31 @@ int main(int argc, char* argv[]) {
     parser.addOption(apSeed);
     parser.addOption(apPlayer);
     parser.addOption(apServer);
+#ifdef BB_AP_FORK
+    QCommandLineOption apPackageSmoke(
+        "ap-package-smoke", "Verify the packaged launcher and Qt runtime can initialize.");
+    parser.addOption(apPackageSmoke);
+#endif
     parser.process(a);
+#ifdef BB_AP_FORK
+    // Packaging smoke runs before RunGuard, application settings, and any
+    // window construction. Reaching this point proves the executable and
+    // its Qt runtime loaded without touching a user installation.
+    if (parser.isSet(apPackageSmoke)) {
+        return 0;
+    }
+#endif
+
+#ifndef USE_WEBENGINE
+    QtWebView::initialize();
+#endif
     bool noGUIset = parser.isSet(noGui);
 
+#ifdef BB_AP_FORK
+    RunGuard guard(QStringLiteral("BBLauncher-AP-single-instance"));
+#else
     RunGuard guard("d8976skj86874hkj287960980lkjhfka1#Q$^&*");
+#endif
     bool noinstancerunning = guard.tryToRun();
 
     BBLauncher* main_window = new BBLauncher(noGUIset, noinstancerunning, nullptr);
@@ -62,14 +80,16 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    // Headless/shortcut startup goes through the same AP preflight-gated
-    // flow as the AP page; the persistent session supervisor owns the
-    // game and client afterwards, so the launcher exits here.
+    // Keep this launcher process alive as the explicit owner of the backend
+    // and native AP client. No detached supervisor survives its lifetime.
     if (parser.isSet(apSeed)) {
         const int code = main_window->RunApHeadless(parser.value(apSeed),
                                                     parser.value(apPlayer),
                                                     parser.value(apServer));
-        return code;
+        if (code != 0) {
+            return code;
+        }
+        return a.exec();
     }
 
     return a.exec();

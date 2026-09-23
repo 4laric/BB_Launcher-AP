@@ -1,0 +1,64 @@
+name: Archipelago integration
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [codex/bblauncher-service-extraction, codex/enemy-randomization-ui]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-integration:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Read backend revision
+        shell: pwsh
+        run: "'ref=' + (Get-Content ap-backend-ref.txt -Raw).Trim() >> $env:GITHUB_OUTPUT"
+        id: backend
+      - uses: actions/checkout@v4
+        with:
+          repository: 4laric/bb-archipelago
+          ref: ${{ steps.backend.outputs.ref }}
+          path: ap-source
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Backend dependencies
+        run: python -m pip install pathspec pyyaml schema jellyfish websockets platformdirs typing_extensions orjson colorama certifi bsdiff4 jinja2
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.10.0'
+          arch: win64_msvc2022_64
+          modules: 'qtmultimedia qtimageformats qtwebview qtwebsockets'
+      - name: Configure actual AP build
+        shell: pwsh
+        run: >-
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" -DCMAKE_C_COMPILER=clang-cl
+          -DCMAKE_CXX_COMPILER=clang-cl -DUSE_WEBENGINE=OFF -DFORCE_UAC=OFF
+          -DBB_AP_FORK=ON -DBB_AP_BUILD_TESTS=ON -DCRYPTOPP_DISABLE_ASM=ON
+      - name: Build
+        run: cmake --build build --parallel 2
+      - name: Test widgets, coordinator and protocol without a game
+        shell: pwsh
+        run: |
+          $env:BB_AP_SOURCE_ROOT = Join-Path $env:GITHUB_WORKSPACE 'ap-source'
+          $env:BB_AP_PYTHON = (Get-Command python).Source
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          ctest --test-dir build --output-on-failure
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-test-logs
+          path: |
+            build/Testing/Temporary/
+            build/**/*results*.txt

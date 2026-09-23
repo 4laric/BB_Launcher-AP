@@ -9,9 +9,82 @@
 
 #include "modules/ipc/ipc_client.h"
 
+namespace Config {
+extern bool GameRunning;
+}
+
 #ifdef Q_OS_WIN
 #include <Windows.h>
 #endif
+
+namespace {
+#ifdef Q_OS_WIN
+struct MainWindowSearch {
+    DWORD pid = 0;
+    HWND window = nullptr;
+};
+
+BOOL CALLBACK FindProcessWindow(HWND window, LPARAM value) {
+    auto* search = reinterpret_cast<MainWindowSearch*>(value);
+    DWORD pid = 0;
+    GetWindowThreadProcessId(window, &pid);
+    if (pid == search->pid && IsWindowVisible(window) && GetWindow(window, GW_OWNER) == nullptr) {
+        search->window = window;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+HANDLE OpenVerifiedProcess(const EmulatorProcessIdentity& identity, DWORD access,
+                           QString* error) {
+    if (!identity.valid || identity.pid <= 0 || identity.executable.isEmpty() ||
+        identity.executableSha256.isEmpty()) {
+        if (error != nullptr) {
+            *error = QStringLiteral("The game process identity is unavailable; restart it from Archipelago first.");
+        }
+        return nullptr;
+    }
+    HANDLE process = OpenProcess(access | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
+                                 FALSE, static_cast<DWORD>(identity.pid));
+    if (process == nullptr) {
+        // ERROR_INVALID_PARAMETER means the PID no longer exists. That is a
+        // completed shutdown; access-denied and all other failures remain
+        // actionable because a live process cannot be proven safe to touch.
+        if (GetLastError() == ERROR_INVALID_PARAMETER) {
+            return INVALID_HANDLE_VALUE;
+        }
+        if (error != nullptr) {
+            *error = QStringLiteral("The Archipelago game process is no longer available.");
+        }
+        return nullptr;
+    }
+    wchar_t imagePath[32768]{};
+    DWORD imageSize = static_cast<DWORD>(std::size(imagePath));
+    FILETIME created{}, exited{}, kernel{}, user{};
+    const bool gotPath = QueryFullProcessImageNameW(process, 0, imagePath, &imageSize) != FALSE;
+    const bool gotTimes = GetProcessTimes(process, &created, &exited, &kernel, &user) != FALSE;
+    ULARGE_INTEGER birth{};
+    birth.LowPart = created.dwLowDateTime;
+    birth.HighPart = created.dwHighDateTime;
+    const QString actualPath = gotPath ? QString::fromWCharArray(imagePath, static_cast<int>(imageSize))
+                                       : QString();
+    const bool matches = gotPath && gotTimes &&
+                         QFileInfo(actualPath).canonicalFilePath().compare(
+                             QFileInfo(identity.executable).canonicalFilePath(), Qt::CaseInsensitive) == 0 &&
+                         (!identity.hasCreationTime || identity.creationTime == birth.QuadPart) &&
+                         EmulatorService::Sha256OfFile(actualPath).compare(
+                             identity.executableSha256, Qt::CaseInsensitive) == 0;
+    if (!matches) {
+        CloseHandle(process);
+        if (error != nullptr) {
+            *error = QStringLiteral("The process no longer matches the game instance started for this session.");
+        }
+        return nullptr;
+    }
+    return process;
+}
+#endif
+} // namespace
 
 EmulatorService::EmulatorService(IpcClient* ipc, QObject* parent)
     : QObject(parent), m_ipc(ipc) {}
@@ -66,6 +139,14 @@ bool EmulatorService::Check(const QString& action, QString* error) {
     return true;
 }
 
+bool EmulatorService::IsEmulatorRunning() const {
+    if (Config::GameRunning) {
+        return true;
+    }
+    const QProcess* process = m_ipc == nullptr ? nullptr : m_ipc->emulatorProcess();
+    return process != nullptr && process->state() != QProcess::NotRunning;
+}
+
 bool EmulatorService::Start(const QFileInfo& exe, const QStringList& args,
                             const QString& workDir, EmulatorProcessIdentity* identity,
                             QString* error) {
@@ -111,4 +192,74 @@ bool EmulatorService::Restart(const QFileInfo& exe, const QStringList& args,
         return false;
     }
     return Start(exe, args, workDir, identity, error);
+}
+
+bool EmulatorService::Focus(const EmulatorProcessIdentity& identity, QString* error) {
+#ifdef Q_OS_WIN
+    HANDLE process = OpenVerifiedProcess(identity, PROCESS_QUERY_LIMITED_INFORMATION, error);
+    if (process == INVALID_HANDLE_VALUE) {
+        if (error != nullptr) {
+            *error = QStringLiteral("The game has already closed.");
+        }
+        return false;
+    }
+    if (process == nullptr) {
+        return false;
+    }
+    CloseHandle(process);
+    MainWindowSearch search{static_cast<DWORD>(identity.pid), nullptr};
+    EnumWindows(FindProcessWindow, reinterpret_cast<LPARAM>(&search));
+    if (search.window == nullptr) {
+        if (error != nullptr) {
+            *error = QStringLiteral("The game is running, but its window could not be found.");
+        }
+        return false;
+    }
+    if (IsIconic(search.window)) {
+        ShowWindow(search.window, SW_RESTORE);
+    }
+    SetForegroundWindow(search.window);
+    return true;
+#else
+    (void)identity;
+    if (error != nullptr) {
+        *error = QStringLiteral("Returning to a running game window is unavailable on this platform.");
+    }
+    return false;
+#endif
+}
+
+bool EmulatorService::Stop(const EmulatorProcessIdentity& identity, QString* error) {
+#ifdef Q_OS_WIN
+    HANDLE process = OpenVerifiedProcess(identity, PROCESS_QUERY_LIMITED_INFORMATION, error);
+    if (process == INVALID_HANDLE_VALUE) {
+        return true;
+    }
+    if (process == nullptr) {
+        return false;
+    }
+    MainWindowSearch search{static_cast<DWORD>(identity.pid), nullptr};
+    EnumWindows(FindProcessWindow, reinterpret_cast<LPARAM>(&search));
+    if (search.window != nullptr) {
+        PostMessageW(search.window, WM_CLOSE, 0, 0);
+        if (WaitForSingleObject(process, 5000) == WAIT_OBJECT_0) {
+            CloseHandle(process);
+            return true;
+        }
+    }
+    // A game may be writing a save. Never force-kill it to switch overlays;
+    // keep the session and active package intact until the user closes it.
+    const bool stopped = WaitForSingleObject(process, 0) == WAIT_OBJECT_0;
+    CloseHandle(process);
+    if (!stopped && error != nullptr) {
+        *error = QStringLiteral("The game is still open. Close it normally, then try switching again; its active package was left in place.");
+    }
+    return stopped;
+#else
+    (void)identity;
+    if (error != nullptr) {
+        *error = QStringLiteral("Stopping the tracked game process is unavailable on this platform.");
+    }
+    return false;
+#endif
 }
