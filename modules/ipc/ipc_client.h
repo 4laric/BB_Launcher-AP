@@ -39,6 +39,10 @@ public:
     explicit IpcClient(QObject* parent = nullptr);
     void startEmulator(const QFileInfo& exe, const QStringList& args,
                        const QString& workDir = QString());
+    // Currently spawned emulator process, if any. Exposed so the
+    // emulator service can capture the real process identity (PID and
+    // creation time) instead of trusting a PID alone.
+    QProcess* emulatorProcess() const { return process; }
     void startGame();
     void pauseGame();
     void resumeGame();

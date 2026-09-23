@@ -16,6 +16,15 @@ endif()
 
 option(FORCE_UAC "Requires running as Admin on Windows" ON)
 option(USE_WEBENGINE "Use WebEngine to enable downloading non-premium mods on Linux" ON)
+# BBLauncher-AP: Archipelago-integrated fork. Controls fork branding and
+# the fork-only update channel; the generic service extraction above is
+# independent of this flag and stays cherry-pickable upstream.
+option(BB_AP_FORK "Build the Archipelago-integrated fork (own update feed)" OFF)
+# Builds the Qt test apps under tests_cpp (needs a Qt host build).
+option(BB_AP_BUILD_TESTS "Build fork integration tests (QtTest)" OFF)
+if (BB_AP_FORK)
+    add_definitions(-DBB_AP_FORK)
+endif()
 
 # First, determine whether to use CMAKE_OSX_ARCHITECTURES or CMAKE_SYSTEM_PROCESSOR.
 if (APPLE AND CMAKE_OSX_ARCHITECTURES)
@@ -144,6 +153,17 @@ set(PROJECT_SOURCES
     modules/ModManager.h
     modules/ModManager.cpp
     modules/ModManager.ui
+    modules/ModService.h
+    modules/ModService.cpp
+    modules/EmulatorService.h
+    modules/EmulatorService.cpp
+    modules/ApFork.h
+    modules/ApBackend.h
+    modules/ApBackend.cpp
+    modules/ApCoordinator.h
+    modules/ApCoordinator.cpp
+    modules/ApPage.h
+    modules/ApPage.cpp
     modules/ModMerger.cpp
     modules/ModMerger.h
     modules/ModMerger.ui
@@ -312,6 +332,11 @@ if (WIN32 AND FORCE_UAC)
 endif()
 
 install(TARGETS BB_Launcher BUNDLE DESTINATION .)
+
+if (BB_AP_BUILD_TESTS)
+    include(CTest)
+    add_subdirectory(tests_cpp)
+endif()
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     install(FILES "dist/BBLauncher.desktop" DESTINATION "share/applications")

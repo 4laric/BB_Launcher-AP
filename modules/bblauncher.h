@@ -4,10 +4,13 @@
 #pragma once
 
 #include <filesystem>
+#include <memory>
 #include <QMainWindow>
 #include <QPushButton>
 #include <QVBoxLayout>
 
+#include "modules/EmulatorService.h"
+#include "modules/ApCoordinator.h"
 #include "modules/QAnsiTextEdit.h"
 #include "modules/ipc/ipc_client.h"
 #include "settings/emulator_settings.h"
@@ -25,8 +28,19 @@ public:
     ~BBLauncher();
 
     bool canLaunch = true;
+    // Single funnel for every emulator startup route (regular play,
+    // Archipelago play, Restart, IPC, no-GUI). The AP coordinator
+    // installs a preflight handler while a session is armed/active.
+    EmulatorService* emulatorService() const { return m_emu_service.get(); }
+    const EmulatorProcessIdentity& lastEmulatorIdentity() const { return m_lastIdentity; }
+    ApCoordinator* apCoordinator() const { return m_ap_coordinator.get(); }
+    // Headless Archipelago Play for no-GUI/shortcut startup. Runs the
+    // same preflight-gated flow as the AP page, then returns 0 when the
+    // session is playing (the supervisor owns game + client afterwards).
+    int RunApHeadless(const QString& seedPath, const QString& player,
+                      const QString& server);
 
-public slots:
+ public slots:
 
 private slots:
     void ShadSelectButton_isPressed();
@@ -55,6 +69,12 @@ private:
     Ui::BBLauncher* ui;
     QAnsiTextEdit* logDisplay;
     std::shared_ptr<IpcClient> m_ipc_client = std::make_shared<IpcClient>();
+    std::unique_ptr<EmulatorService> m_emu_service;
+    std::unique_ptr<ApCoordinator> m_ap_coordinator;
+    EmulatorProcessIdentity m_lastIdentity;
+    void OpenApPage();
+    void OpenModManager();
+    void OpenShadSettings();
     std::shared_ptr<EmulatorSettingsImpl> m_emu_settings = std::make_shared<EmulatorSettingsImpl>();
     std::shared_ptr<UserSettingsImpl> m_user_settings = std::make_shared<UserSettingsImpl>();
 
@@ -64,6 +84,7 @@ private:
     bool is_paused;
 
     QPushButton* modManagerButton = new QPushButton(this);
+    QPushButton* archipelagoButton = new QPushButton(this);
     QPushButton* modDownloaderButton = new QPushButton(this);
     QPushButton* patchesButton = new QPushButton(this);
     QPushButton* shadSettingsButton = new QPushButton(this);

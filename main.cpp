@@ -33,6 +33,13 @@ int main(int argc, char* argv[]) {
     QCommandLineParser parser;
     QCommandLineOption noGui("n");
     parser.addOption(noGui);
+    QCommandLineOption apSeed("ap-seed", "Headless Archipelago Play with this seed file.", "path");
+    QCommandLineOption apPlayer("ap-player", "AP player name (multi-slot seeds).", "name");
+    QCommandLineOption apServer("ap-server", "AP server address (when the seed omits it).",
+                                "address");
+    parser.addOption(apSeed);
+    parser.addOption(apPlayer);
+    parser.addOption(apServer);
     parser.process(a);
     bool noGUIset = parser.isSet(noGui);
 
@@ -53,6 +60,16 @@ int main(int argc, char* argv[]) {
 
     if (!main_window->canLaunch) {
         return 0;
+    }
+
+    // Headless/shortcut startup goes through the same AP preflight-gated
+    // flow as the AP page; the persistent session supervisor owns the
+    // game and client afterwards, so the launcher exits here.
+    if (parser.isSet(apSeed)) {
+        const int code = main_window->RunApHeadless(parser.value(apSeed),
+                                                    parser.value(apPlayer),
+                                                    parser.value(apServer));
+        return code;
     }
 
     return a.exec();
