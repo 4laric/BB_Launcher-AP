@@ -9,6 +9,7 @@
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QMessageBox>
 #include <QVBoxLayout>
@@ -32,6 +33,7 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
 
     auto* form = new QFormLayout();
     m_seedEdit = new QLineEdit(this);
+    m_seedEdit->setObjectName(QStringLiteral("apSeedPath"));
     m_seedEdit->setPlaceholderText(tr("AP seed file (.zip or .bbseed.json)"));
     m_seedEdit->setClearButtonEnabled(true);
     auto* browse = new QPushButton(tr("Browse&hellip;"), this);
@@ -41,33 +43,44 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
     seedRow->addWidget(browse);
     form->addRow(tr("&Seed:"), seedRow);
     connect(m_seedEdit, &QLineEdit::editingFinished, this, &ApPage::SeedChanged);
+    m_operationControls << m_seedEdit << browse;
 
     m_playerLabel = new QLabel(tr("&Player:"), this);
     m_playerCombo = new QComboBox(this);
+    m_playerCombo->setObjectName(QStringLiteral("apPlayerChoice"));
     m_playerCombo->setEditable(false);
+    m_operationControls << m_playerCombo;
     m_playerLabel->setBuddy(m_playerCombo);
     form->addRow(m_playerLabel, m_playerCombo);
 
     m_serverLabel = new QLabel(tr("S&erver:"), this);
     m_serverEdit = new QLineEdit(this);
+    m_operationControls << m_serverEdit;
     m_serverEdit->setPlaceholderText(tr("archipelago.gg:port"));
     m_serverLabel->setBuddy(m_serverEdit);
     form->addRow(m_serverLabel, m_serverEdit);
 
     m_passwordLabel = new QLabel(tr("P&assword:"), this);
     m_passwordEdit = new QLineEdit(this);
+    m_passwordEdit->setPlaceholderText(tr("Optional; only needed for protected rooms"));
     m_passwordEdit->setEchoMode(QLineEdit::Password);
+    m_operationControls << m_passwordEdit;
     m_passwordLabel->setBuddy(m_passwordEdit);
     form->addRow(m_passwordLabel, m_passwordEdit);
     layout->addLayout(form);
 
     auto* actions = new QHBoxLayout();
     m_playButton = new QPushButton(tr("&Play"), this);
+    m_playButton->setObjectName(QStringLiteral("apPlay"));
     m_playButton->setDefault(true);
+    m_operationControls << m_playButton;
     connect(m_playButton, &QPushButton::clicked, this, &ApPage::PlayClicked);
     m_cancelButton = new QPushButton(tr("&Cancel"), this);
+    m_cancelButton->setObjectName(QStringLiteral("apCancel"));
     connect(m_cancelButton, &QPushButton::clicked, this, &ApPage::CancelClicked);
     m_switchSeedButton = new QPushButton(tr("Change &seed"), this);
+    m_switchSeedButton->setObjectName(QStringLiteral("apSwitchSeed"));
+    m_operationControls << m_switchSeedButton;
     connect(m_switchSeedButton, &QPushButton::clicked, this, &ApPage::SwitchSeedClicked);
     actions->addWidget(m_playButton);
     actions->addWidget(m_cancelButton);
@@ -79,18 +92,24 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
     layout->addWidget(m_progress);
 
     m_statusLabel = new QLabel(tr("Choose a seed file, then press Play."), this);
+    m_statusLabel->setObjectName(QStringLiteral("apStatus"));
     m_statusLabel->setWordWrap(true);
     m_statusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     layout->addWidget(m_statusLabel, 1);
 
     auto* nav = new QHBoxLayout();
     auto* modsButton = new QPushButton(tr("&Mods"), this);
+    m_operationControls << modsButton;
     connect(modsButton, &QPushButton::clicked, this, &ApPage::requestMods);
     auto* emuButton = new QPushButton(tr("&Emulator settings"), this);
+    m_operationControls << emuButton;
     connect(emuButton, &QPushButton::clicked, this, &ApPage::requestEmulatorSettings);
     m_regularButton = new QPushButton(tr("&Regular play"), this);
+    m_regularButton->setObjectName(QStringLiteral("apRegularPlay"));
+    m_operationControls << m_regularButton;
     connect(m_regularButton, &QPushButton::clicked, this, &ApPage::RegularPlayClicked);
     auto* helpButton = new QPushButton(tr("&Help"), this);
+    m_operationControls << helpButton;
     connect(helpButton, &QPushButton::clicked, this, &ApPage::HelpClicked);
     nav->addWidget(modsButton);
     nav->addWidget(emuButton);
@@ -109,16 +128,16 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
     m_playerCombo->setVisible(false);
     m_serverLabel->setVisible(false);
     m_serverEdit->setVisible(false);
-    m_passwordLabel->setVisible(false);
-    m_passwordEdit->setVisible(false);
     RefreshForSession();
 }
 
 void ApPage::SetBusy(bool busy, const QString& stage) {
-    m_playButton->setEnabled(!busy);
+    m_busy = busy;
+    for (QWidget* control : m_operationControls) {
+        control->setEnabled(!busy);
+    }
     m_cancelButton->setVisible(busy);
-    m_switchSeedButton->setEnabled(!busy);
-    m_seedEdit->setEnabled(!busy);
+    m_cancelButton->setEnabled(busy);
     m_progress->setRange(0, busy ? 0 : 1);
     m_progress->setValue(busy ? 0 : 1);
     if (busy && !stage.isEmpty()) {
@@ -158,41 +177,53 @@ void ApPage::BrowseSeed() {
 }
 
 void ApPage::SeedChanged() {
-    if (m_inspecting || m_seedEdit->text().trimmed().isEmpty()) {
+    if (m_inspecting) {
+        return;
+    }
+    const QString seedPath = m_seedEdit->text().trimmed();
+    if (seedPath.isEmpty()) {
+        m_playerCombo->clear();
+        m_playerLabel->setVisible(false);
+        m_playerCombo->setVisible(false);
+        m_serverEdit->clear();
+        m_serverLabel->setVisible(false);
+        m_serverEdit->setVisible(false);
+        SetStatus(tr("Choose a seed file, then press Play."), false);
         return;
     }
     m_inspecting = true;
+    m_cancelled = false;
+    SetBusy(true, tr("Checking seed"));
     QString error;
     if (!EnsureConfigured(&error)) {
         ShowError(error);
         m_inspecting = false;
+        SetBusy(false);
         return;
     }
-    if (!m_coordinator->backend()->IsRunning() &&
-        !m_coordinator->backend()->Start(ApBackend::DefaultStateRoot(), &error)) {
-        ShowError(error);
-        m_inspecting = false;
-        return;
-    }
-    ApResponse seen = m_coordinator->backend()->Call(
-        QStringLiteral("inspect_seed"),
-        QJsonObject{{QStringLiteral("seed_path"), m_seedEdit->text().trimmed()}}, 30000);
-    if (!seen.ok) {
-        if (seen.error.code == QStringLiteral("ambiguous-player")) {
-            // Multi-slot seed: remember the choice by seed; ask once.
-            ShowError(tr("This seed has several players. Choose yours, then press Play."));
+    ApResponse seen;
+    if (!m_coordinator->InspectSeed(seedPath, {}, &seen, &error)) {
+        if (m_cancelled) {
+            SetStatus(tr("Seed check cancelled. No game or mod changes were made."), false);
         } else {
-            ShowError(seen.error.detail);
+            ShowError(error);
         }
         m_inspecting = false;
+        SetBusy(false);
         return;
     }
-    const QStringList slotNames = seen.result.value(QStringLiteral("slots")).toVariant().toStringList();
+    QStringList slotNames;
+    for (const QJsonValue& slot : seen.result.value(QStringLiteral("slots")).toArray()) {
+        if (slot.isString()) {
+            slotNames.push_back(slot.toString());
+        }
+    }
     const QString selected = seen.result.value(QStringLiteral("selected")).toString();
-    const bool needsChoice = seen.result.value(QStringLiteral("needs_choice")).toBool();
     m_playerCombo->clear();
     m_playerCombo->addItems(slotNames);
     m_playerCombo->setCurrentText(selected);
+    const bool needsChoice = seen.result.value(QStringLiteral("needs_choice")).toBool() ||
+                             slotNames.size() > 1;
     m_playerLabel->setVisible(needsChoice);
     m_playerCombo->setVisible(needsChoice);
     const QString server = seen.result.value(QStringLiteral("server")).toString();
@@ -206,9 +237,20 @@ void ApPage::SeedChanged() {
         SetStatus(tr("Seed ready. Enter the server address, then press Play."), false);
     }
     m_inspecting = false;
+    SetBusy(false);
 }
 
 void ApPage::PlayClicked() {
+    if (m_busy) {
+        return;
+    }
+    if (m_coordinator->GameStarted()) {
+        QString error;
+        if (!m_coordinator->ReturnToGame(&error)) {
+            ShowError(error);
+        }
+        return;
+    }
     QString error;
     if (!EnsureConfigured(&error)) {
         ShowError(error);
@@ -224,21 +266,30 @@ void ApPage::PlayClicked() {
     request.seedPath = seedPath;
     if (m_playerCombo->isVisible()) {
         request.playerName = m_playerCombo->currentText();
+        if (request.playerName.isEmpty()) {
+            ShowError(tr("Choose a player for this seed first."));
+            return;
+        }
     }
     request.server = m_serverEdit->text().trimmed();
     request.password = m_passwordEdit->text();
 
     m_cancelled = false;
+    m_pollTimer->stop();
     SetBusy(true, tr("Preparing your seed"));
-    // The flow runs stepwise on this thread; every backend call pumps
-    // events while waiting so Cancel and stage text stay live.
+    // Backend calls can take several minutes. While they wait, the backend
+    // owns a controlled Qt event pump; all mutating controls are disabled.
 
     ApCoordinator::Prepared prepared;
     bool ok = false;
     QString failure;
     // Prepare.
     if (!m_coordinator->Prepare(request, &prepared, &failure)) {
-        ShowError(failure);
+        if (m_cancelled) {
+            SetStatus(tr("Cancelled after the current safe step. No game was started."), false);
+        } else {
+            ShowError(failure);
+        }
         SetBusy(false);
         return;
     }
@@ -251,6 +302,11 @@ void ApPage::PlayClicked() {
     SetBusy(true, tr("Setting up your game"));
     bool wasConflict = false;
     if (!m_coordinator->Activate(prepared, false, &wasConflict, &failure)) {
+        if (m_cancelled) {
+            SetStatus(tr("Cancelled after the current safe step. Use Regular play to restore the previous setup if needed."), false);
+            SetBusy(false);
+            return;
+        }
         if (wasConflict) {
             // Offer Disable conflicting mod and play, with the exact
             // reversible plan, and nothing else.
@@ -281,20 +337,22 @@ void ApPage::PlayClicked() {
     }
     // Arm, start, connect.
     if (!m_coordinator->Arm(prepared, &failure)) {
-        ShowError(failure);
+        if (m_cancelled) SetStatus(tr("Cancelled after the current safe step. The game was not started."), false);
+        else ShowError(failure);
         SetBusy(false);
         return;
     }
     if (!m_coordinator->StartGame(&failure)) {
-        ShowError(failure);
+        if (m_cancelled) SetStatus(tr("Cancelled after the current safe step."), false);
+        else ShowError(failure);
         SetBusy(false);
         return;
     }
     if (!m_coordinator->Connect(&failure)) {
-        if (m_coordinator->lastErrorCode() == QStringLiteral("password-required")) {
-            m_passwordLabel->setVisible(true);
-            m_passwordEdit->setVisible(true);
-            ShowError(tr("This server needs a password. Enter it, then press Play."));
+        if (m_cancelled) {
+            SetStatus(tr("Cancelled after the current safe step. The game may be open; close it before switching setups."), false);
+        } else if (m_coordinator->lastErrorCode() == QStringLiteral("password-required")) {
+            ShowError(tr("This server needs a password. Enter it above, then press Play."));
         } else {
             ShowError(failure);
         }
@@ -304,20 +362,26 @@ void ApPage::PlayClicked() {
     ok = true;
     SetBusy(false);
     if (ok) {
-        SetStatus(tr("Connected. Ready to play."), false);
+        SetStatus(tr("Game and Archipelago client started. Check the game for connection status."), false);
         m_pollTimer->start();
     }
     RefreshForSession();
+    if (!m_coordinator->sessionId().isEmpty()) {
+        m_pollTimer->start();
+    }
 }
 
 void ApPage::CancelClicked() {
     m_cancelled = true;
-    m_coordinator->backend()->RequestCancel();
-    SetStatus(tr("Cancelling at the next safe step. Your previous setup is kept."), false);
+    m_coordinator->RequestCancel();
+    SetStatus(tr("Cancellation requested. The current backend step will finish safely, then Play will stop."), false);
 }
 
 void ApPage::SwitchSeedClicked() {
-    if (m_coordinator->IsPlaying()) {
+    if (m_busy) {
+        return;
+    }
+    if (m_coordinator->HasSession() || m_coordinator->GameStarted()) {
         auto answer = QMessageBox::question(
             this, tr("Switch seed"),
             tr("A game is running. Quit the game and switch seed?"));
@@ -325,8 +389,12 @@ void ApPage::SwitchSeedClicked() {
             return;
         }
     }
+    QString error;
+    if (!m_coordinator->SwitchToSeed(&error)) {
+        ShowError(error);
+        return;
+    }
     m_pollTimer->stop();
-    m_coordinator->ResetSession();
     m_seedEdit->clear();
     m_playerCombo->clear();
     SetStatus(tr("Choose a seed file, then press Play."), false);
@@ -334,6 +402,17 @@ void ApPage::SwitchSeedClicked() {
 }
 
 void ApPage::RegularPlayClicked() {
+    if (m_busy) {
+        return;
+    }
+    if (m_coordinator->HasSession() || m_coordinator->GameStarted()) {
+        const auto answer = QMessageBox::question(
+            this, tr("Switch to regular play"),
+            tr("Stop the Archipelago client and game, then remove its active package?"));
+        if (answer != QMessageBox::Yes) {
+            return;
+        }
+    }
     QString error;
     if (!EnsureConfigured(&error)) {
         ShowError(error);
@@ -353,12 +432,20 @@ void ApPage::HelpClicked() {
     lines.push_back(tr("Backend: %1").arg(ApBackend::FindBackend()));
     lines.push_back(tr("State: %1").arg(ApBackend::DefaultStateRoot()));
     lines.push_back(tr("Upstream baseline: %1").arg(ApFork::UpstreamBaseline()));
-    if (m_coordinator->backend()->IsRunning()) {
+    if (m_coordinator->backend() != nullptr && m_coordinator->backend()->IsRunning()) {
         const QJsonObject caps = m_coordinator->backend()->capabilities();
         lines.push_back(tr("Protocol: %1").arg(
             caps.value(QStringLiteral("protocol")).toString()));
     }
     QMessageBox::information(this, tr("Diagnostics"), lines.join(QStringLiteral("\n")));
+}
+
+void ApPage::closeEvent(QCloseEvent* event) {
+    if (m_busy) {
+        event->ignore();
+        return;
+    }
+    QDialog::closeEvent(event);
 }
 
 void ApPage::PollStatus() {
@@ -368,17 +455,16 @@ void ApPage::PollStatus() {
         return;
     }
     if (state == QStringLiteral("playing")) {
-        SetStatus(tr("Connected. Ready to play."), false);
+        SetStatus(tr("Game and Archipelago client are running. Check the game for connection status."), false);
     } else if (state == QStringLiteral("recoverable")) {
-        // Neutral wait: reconnect with backoff, keep preparation.
-        SetStatus(tr("Reconnecting to Archipelago. Your setup is kept; "
-                     "no need to prepare again."), false);
+        SetStatus(tr("The Archipelago client or game is no longer running. "
+                     "Your setup is kept; use Regular play to restore your previous setup."), false);
     }
     RefreshForSession();
 }
 
 void ApPage::RefreshForSession() {
-    if (m_coordinator->IsPlaying()) {
+    if (m_coordinator->GameStarted()) {
         m_playButton->setText(tr("Return to &game"));
     } else if (m_coordinator->HasSession()) {
         m_playButton->setText(tr("&Play"));

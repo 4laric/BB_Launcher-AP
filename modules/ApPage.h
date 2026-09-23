@@ -18,6 +18,7 @@
 
 #include <QComboBox>
 #include <QDialog>
+#include <QCloseEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QProgressBar>
@@ -52,6 +53,7 @@ class ApPage : public QDialog {
     void ShowError(const QString& detail);
     bool EnsureConfigured(QString* error);
     void RefreshForSession();
+    void closeEvent(QCloseEvent* event) override;
 
     ApCoordinator* m_coordinator;
     QLabel* m_setupLabel = nullptr;
@@ -71,4 +73,6 @@ class ApPage : public QDialog {
     QTimer* m_pollTimer = nullptr;
     bool m_cancelled = false;
     bool m_inspecting = false;
+    bool m_busy = false;
+    QList<QWidget*> m_operationControls;
 };

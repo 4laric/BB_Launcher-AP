@@ -703,6 +703,17 @@ void BBLauncher::onGameClosed() {
     is_paused = false;
     save_backups = false;
 
+    if (m_ap_coordinator != nullptr) {
+        QString error;
+        if (!m_ap_coordinator->GameClosed(&error)) {
+            LogError(error.toStdString());
+            // A headless fork is the live session owner. Keep its event loop
+            // and backend alive so the user can recover instead of orphaning
+            // an AP client when shutdown fails.
+            return;
+        }
+    }
+
     if (noGUIset)
         QApplication::quit();
 }

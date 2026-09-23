@@ -60,6 +60,7 @@ class ApBackend : public QObject {
     void RequestCancel();
 
     bool IsRunning() const;
+    bool IsCallInProgress() const { return m_callInProgress; }
     QString stateRoot() const { return m_stateRoot; }
     QJsonObject capabilities() const { return m_capabilities; }
 
@@ -73,6 +74,7 @@ class ApBackend : public QObject {
     bool EnsureLine(const QString& id, int timeoutMs, QByteArray* line, QString* error);
     qint64 m_seq = 0;
     bool m_cancelRequested = false;
+    bool m_callInProgress = false;
 
     QProcess* m_process = nullptr;
     QString m_stateRoot;

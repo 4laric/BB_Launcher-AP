@@ -42,14 +42,18 @@ class EmulatorService : public QObject {
     using PreflightHandler = std::function<QString(const QString& action)>;
 
     explicit EmulatorService(IpcClient* ipc, QObject* parent = nullptr);
+    ~EmulatorService() override = default;
 
     void setPreflightHandler(PreflightHandler handler) { m_preflight = std::move(handler); }
     void clearPreflightHandler() { m_preflight = nullptr; }
 
-    bool Start(const QFileInfo& exe, const QStringList& args, const QString& workDir,
-               EmulatorProcessIdentity* identity, QString* error);
+    virtual bool Start(const QFileInfo& exe, const QStringList& args, const QString& workDir,
+                       EmulatorProcessIdentity* identity, QString* error);
     bool Restart(const QFileInfo& exe, const QStringList& args, const QString& workDir,
                  EmulatorProcessIdentity* identity, QString* error);
+    virtual bool Focus(const EmulatorProcessIdentity& identity, QString* error);
+    virtual bool Stop(const EmulatorProcessIdentity& identity, QString* error);
+    virtual bool IsEmulatorRunning() const;
     // Runs the preflight handler without starting anything, so read-only
     // actions (e.g. sending START to an already-running game) share the
     // same gate as every launch path.
