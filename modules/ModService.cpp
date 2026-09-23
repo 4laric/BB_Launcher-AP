@@ -784,6 +784,19 @@ Result ModService::Rollback(const Plan& plan) const {
         // Activation moves the selected folder before touching overlay files.
         // Put it back after the overlay is safe so the operation can be retried.
         if (result.ok) {
+            const auto backup = m_backupRoot / plan.modName;
+            std::error_code ec;
+            if (std::filesystem::exists(backup, ec) && !ec) {
+                PruneEmptyDirs(backup);
+                if (!std::filesystem::is_empty(backup, ec) || ec) {
+                    fail(kInterrupted, "unexpected files remain in the activation backup folder");
+                } else {
+                    std::filesystem::remove(backup, ec);
+                    if (ec) fail(kInterrupted, "cannot remove the empty activation backup folder");
+                }
+            }
+        }
+        if (result.ok) {
             const auto active = m_activeRoot / plan.modName;
             const auto inactive = m_inactiveRoot / plan.modName;
             std::error_code ec;
@@ -935,6 +948,15 @@ Result ModService::CommitActivate(const Plan& plan, Progress progress, Cancelled
     // When the source had no dvdroot wrapper, `active` now holds the
     // content directly; otherwise rename() moved the content dir itself.
     const std::filesystem::path activeContent = active;
+
+    // An empty backup folder records that this activation had no original
+    // overlay files. Without it, deactivation would mistake a clean install
+    // for a manually deleted backup and leave the mod's added files behind.
+    std::filesystem::create_directories(backup, ec);
+    if (ec) {
+        return Result{false, kFilesystemError,
+                      "could not create the mod backup folder: " + ec.message(), {}, {}};
+    }
 
     const std::size_t total = plan.mutations.size();
     std::size_t done = 0;

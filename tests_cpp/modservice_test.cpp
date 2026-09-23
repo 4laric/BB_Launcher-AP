@@ -290,6 +290,27 @@ int main() {
         CHECK(fs::is_directory(fx.inactive / "Solo"));
     }
 
+    // An empty backup folder is a valid activation state: deactivation removes
+    // mod-added files even when there were no original overlay files to save.
+    {
+        Fixture fx("added-file-only");
+        WriteFile(fx.inactive / "Pack" / "sfx" / "added.sfx", "mod-only");
+        modservice::ModService service = fx.Service();
+        modservice::Plan up;
+        CHECK(service.PlanActivate("Pack", up).ok);
+        CHECK(service.Commit(up).ok);
+        CHECK(fs::is_directory(fx.backup / "Pack"));
+        CHECK(ReadFile(fx.installMods / "sfx" / "added.sfx") == "mod-only");
+
+        modservice::Plan down;
+        CHECK(service.PlanDeactivate("Pack", down).ok);
+        CHECK(!down.backupMissing);
+        CHECK(service.Commit(down).ok);
+        CHECK(!fs::exists(fx.installMods / "sfx" / "added.sfx"));
+        CHECK(!fs::exists(fx.backup / "Pack"));
+        CHECK(fs::is_directory(fx.inactive / "Pack"));
+    }
+
     if (g_failures == 0) {
         std::cout << "modservice standalone tests passed\n";
         return 0;
