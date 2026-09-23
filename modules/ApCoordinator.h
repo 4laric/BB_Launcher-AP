@@ -32,6 +32,18 @@ struct ApPlayRequest {
     QString playerName;
     QString server;
     QString password; // request bodies only; never logged, never in argv
+    struct Enemizer {
+        bool enabled = false;
+        QString seed;
+        bool allowTierMixing = false;
+        bool preserveLocomotion = false;
+        bool normalizeScaling = false;
+        bool bossCanary = false;
+        QString bossPool;
+        bool releaseContracts = false;
+        bool releaseSpawns = false;
+        bool releaseChara = false;
+    } enemizer;
 };
 
 // Managed by the AP coordinator in copy mode. The default paths match the
@@ -91,6 +103,7 @@ class ApCoordinator : public QObject {
         QString server;
         QString title;
         bool reused = false;
+        QString enemySummary;
     };
     bool Prepare(const ApPlayRequest& request, Prepared* prepared, QString* error);
     // Activates the prepared package through ModService (copy). When a

@@ -6,6 +6,8 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
@@ -105,6 +107,8 @@ class ApUiTest final : public QObject {
         shad.close();
         Config::GameRunning = false;
         qputenv("BB_AP_STATE_ROOT", (m_scratch->path() + QStringLiteral("/state")).toLocal8Bit());
+        m_capturedPrepare = m_scratch->path() + QStringLiteral("/prepare-request.json");
+        qputenv("BB_AP_TEST_CAPTURE_REQUEST", m_capturedPrepare.toLocal8Bit());
 
         const QString package = QDir::currentPath() +
                                 QStringLiteral("/BBLauncher/Mods/Archipelago-Fixture/dvdroot_ps4/map");
@@ -121,6 +125,7 @@ class ApUiTest final : public QObject {
     void cleanup() {
         m_coordinator.reset();
         m_emulator.reset();
+        qunsetenv("BB_AP_TEST_CAPTURE_REQUEST");
         QVERIFY(QDir::setCurrent(m_previousCwd));
         m_scratch.reset();
     }
@@ -138,7 +143,27 @@ class ApUiTest final : public QObject {
         auto* player = page.findChild<QComboBox*>(QStringLiteral("apPlayerChoice"));
         auto* play = page.findChild<QPushButton*>(QStringLiteral("apPlay"));
         auto* changeSeed = page.findChild<QPushButton*>(QStringLiteral("apSwitchSeed"));
+        auto* randomize = page.findChild<QCheckBox*>(QStringLiteral("apRandomizeEnemies"));
+        auto* coverage = page.findChild<QGroupBox*>(QStringLiteral("apExpandedEnemyCoverage"));
+        auto* contracts = page.findChild<QCheckBox*>(QStringLiteral("apEnemyScriptedBehavior"));
+        auto* spawns = page.findChild<QCheckBox*>(QStringLiteral("apEnemyAmbushes"));
+        auto* hunters = page.findChild<QCheckBox*>(QStringLiteral("apEnemyHunters"));
+        auto* advanced = page.findChild<QToolButton*>(QStringLiteral("apAdvancedEnemyOptions"));
+        auto* enemySeed = page.findChild<QLineEdit*>(QStringLiteral("apEnemySeed"));
         QVERIFY(seedEdit && player && play && changeSeed);
+        QVERIFY(randomize && coverage && contracts && spawns && hunters && advanced && enemySeed);
+        QVERIFY(randomize->isChecked());
+        QVERIFY(coverage->isChecked());
+        QVERIFY(contracts->isChecked());
+        QVERIFY(spawns->isChecked());
+        QVERIFY(hunters->isChecked());
+        randomize->setChecked(false);
+        QVERIFY(!coverage->isEnabled());
+        randomize->setChecked(true);
+        QVERIFY(coverage->isEnabled());
+        advanced->click();
+        enemySeed->setText(QStringLiteral("fixture-enemy-seed"));
+        spawns->setChecked(false);
         seedEdit->setText(seedPath);
         QVERIFY(QMetaObject::invokeMethod(&page, "SeedChanged"));
         QVERIFY(player->isVisible());
@@ -149,6 +174,29 @@ class ApUiTest final : public QObject {
         QVERIFY(m_coordinator->IsPlaying());
         QCOMPARE(m_coordinator->displayTitle(), QStringLiteral("Fixture seed — Bob"));
         QCOMPARE(m_emulator->startCalls, 1);
+        QVERIFY(!randomize->isEnabled());
+        QFile captured(m_capturedPrepare);
+        QVERIFY(captured.open(QIODevice::ReadOnly));
+        const QJsonObject capturedRequest =
+            QJsonDocument::fromJson(captured.readAll()).object();
+        const QJsonObject enemy =
+            capturedRequest.value(QStringLiteral("params")).toObject()
+                .value(QStringLiteral("enemizer")).toObject();
+        QCOMPARE(enemy.value(QStringLiteral("enabled")).toBool(), true);
+        QCOMPARE(enemy.value(QStringLiteral("seed")).toString(),
+                 QStringLiteral("fixture-enemy-seed"));
+        QCOMPARE(enemy.value(QStringLiteral("allow_tier_mixing")).toBool(), true);
+        QCOMPARE(enemy.value(QStringLiteral("preserve_locomotion")).toBool(), true);
+        QCOMPARE(enemy.value(QStringLiteral("normalize_scaling")).toBool(), false);
+        QCOMPARE(enemy.value(QStringLiteral("boss_canary")).toBool(), false);
+        QVERIFY(enemy.value(QStringLiteral("boss_pool")).isNull());
+        QCOMPARE(enemy.value(QStringLiteral("release_contracts")).toBool(), true);
+        QCOMPARE(enemy.value(QStringLiteral("release_spawns")).toBool(), false);
+        QCOMPARE(enemy.value(QStringLiteral("release_chara")).toBool(), true);
+        QVERIFY(page.findChild<QLabel*>(QStringLiteral("apStatus"))->text()
+                    .contains(QStringLiteral("117 enemy swaps")));
+        QVERIFY(page.findChild<QLabel*>(QStringLiteral("apStatus"))->text()
+                    .contains(QStringLiteral("214 map files")));
         QVERIFY(QDir(QDir::currentPath() + QStringLiteral("/BBLauncher/Mods-Active (DO NOT DELETE)/Archipelago-Fixture")).exists());
         QFile overlay(m_scratch->path() + QStringLiteral("/CUSA03173-mods/dvdroot_ps4/map/fixture.bin"));
         QVERIFY(overlay.exists());
@@ -184,6 +232,7 @@ class ApUiTest final : public QObject {
         QVERIFY2(!m_coordinator->HasSession(), status ? qPrintable(status->text()) : "missing status");
         QVERIFY(!m_coordinator->GameStarted());
         QCOMPARE(m_emulator->stopCalls, 1);
+        QVERIFY(randomize->isEnabled());
         QVERIFY(!overlay.exists());
         QVERIFY(!QDir(QDir::currentPath() + QStringLiteral("/BBLauncher/Mods-Active (DO NOT DELETE)/Archipelago-Fixture")).exists());
         QVERIFY(QFile::exists(QDir::currentPath() +
@@ -271,6 +320,7 @@ class ApUiTest final : public QObject {
 
   private:
     QString m_previousCwd;
+    QString m_capturedPrepare;
     std::unique_ptr<QTemporaryDir> m_scratch;
     QString m_gameRoot;
     std::unique_ptr<FakeEmulatorService> m_emulator;

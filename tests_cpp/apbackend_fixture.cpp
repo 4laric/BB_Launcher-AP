@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <QCoreApplication>
+#include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -37,9 +38,22 @@ int main(int argc, char** argv) {
                       {"selected", player},
                       {"needs_choice", player.isEmpty()}};
         } else if (op == QStringLiteral("prepare_play")) {
+            const QString capturePath = qEnvironmentVariable("BB_AP_TEST_CAPTURE_REQUEST");
+            if (!capturePath.isEmpty()) {
+                QFile capture(capturePath);
+                if (capture.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                    capture.write(QJsonDocument(request).toJson(QJsonDocument::Compact));
+                }
+            }
+            const QJsonObject enemizer = params.value("enemizer").toObject();
             result = {{"play_id", "fixture-play"},
                       {"package_name", "Archipelago-Fixture"},
                       {"reused", false},
+                      {"enemizer", QJsonObject{{"enabled", enemizer.value("enabled")},
+                                                {"seed", enemizer.value("seed")},
+                                                {"swap_count", 117},
+                                                {"map_file_count", 214},
+                                                {"ai_file_count", 28}}},
                       {"display", QJsonObject{{"seed", "Fixture seed"},
                                                {"slot", params.value("player_name")},
                                                {"server", params.value("server")},

@@ -69,6 +69,87 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
     form->addRow(m_passwordLabel, m_passwordEdit);
     layout->addLayout(form);
 
+    m_enemizerGroup = new QGroupBox(tr("Enemies"), this);
+    m_enemizerGroup->setObjectName(QStringLiteral("apEnemyOptions"));
+    auto* enemyLayout = new QVBoxLayout(m_enemizerGroup);
+    m_randomizeEnemies = new QCheckBox(tr("Randomize enemies"), m_enemizerGroup);
+    m_randomizeEnemies->setObjectName(QStringLiteral("apRandomizeEnemies"));
+    m_randomizeEnemies->setChecked(true);
+    enemyLayout->addWidget(m_randomizeEnemies);
+
+    m_expandedCoverage = new QGroupBox(tr("Expanded coverage (experimental)"), m_enemizerGroup);
+    m_expandedCoverage->setObjectName(QStringLiteral("apExpandedEnemyCoverage"));
+    m_expandedCoverage->setCheckable(true);
+    m_expandedCoverage->setChecked(true);
+    auto* coverageLayout = new QVBoxLayout(m_expandedCoverage);
+    auto* coverageNote = new QLabel(
+        tr("Includes additional scripted enemies. Gameplay has not been tested for every encounter."),
+        m_expandedCoverage);
+    coverageNote->setWordWrap(true);
+    coverageNote->setToolTip(coverageNote->text());
+    coverageLayout->addWidget(coverageNote);
+    m_releaseContracts = new QCheckBox(tr("Scripted enemies with supported behavior"),
+                                        m_expandedCoverage);
+    m_releaseContracts->setObjectName(QStringLiteral("apEnemyScriptedBehavior"));
+    m_releaseContracts->setChecked(true);
+    m_releaseSpawns = new QCheckBox(tr("Enemies created by ambushes"), m_expandedCoverage);
+    m_releaseSpawns->setObjectName(QStringLiteral("apEnemyAmbushes"));
+    m_releaseSpawns->setChecked(true);
+    m_releaseChara = new QCheckBox(tr("Hunter-type enemies with scripted equipment"),
+                                    m_expandedCoverage);
+    m_releaseChara->setObjectName(QStringLiteral("apEnemyHunters"));
+    m_releaseChara->setChecked(true);
+    coverageLayout->addWidget(m_releaseContracts);
+    coverageLayout->addWidget(m_releaseSpawns);
+    coverageLayout->addWidget(m_releaseChara);
+    enemyLayout->addWidget(m_expandedCoverage);
+
+    m_advancedEnemyOptions = new QToolButton(m_enemizerGroup);
+    m_advancedEnemyOptions->setObjectName(QStringLiteral("apAdvancedEnemyOptions"));
+    m_advancedEnemyOptions->setText(tr("Advanced enemy options"));
+    m_advancedEnemyOptions->setCheckable(true);
+    m_advancedEnemyOptions->setChecked(false);
+    m_advancedEnemyOptions->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_advancedEnemyOptions->setArrowType(Qt::RightArrow);
+    enemyLayout->addWidget(m_advancedEnemyOptions, 0, Qt::AlignLeft);
+
+    m_advancedEnemyPanel = new QWidget(m_enemizerGroup);
+    m_advancedEnemyPanel->setObjectName(QStringLiteral("apAdvancedEnemyPanel"));
+    auto* advancedLayout = new QVBoxLayout(m_advancedEnemyPanel);
+    advancedLayout->setContentsMargins(12, 0, 0, 0);
+    auto* enemySeedRow = new QHBoxLayout();
+    enemySeedRow->addWidget(new QLabel(tr("Enemy seed:"), m_advancedEnemyPanel));
+    m_enemySeedEdit = new QLineEdit(m_advancedEnemyPanel);
+    m_enemySeedEdit->setObjectName(QStringLiteral("apEnemySeed"));
+    m_enemySeedEdit->setPlaceholderText(tr("Optional; blank uses the AP seed"));
+    enemySeedRow->addWidget(m_enemySeedEdit, 1);
+    advancedLayout->addLayout(enemySeedRow);
+    m_allowTierMixing = new QCheckBox(tr("Allow replacements from any difficulty tier"),
+                                       m_advancedEnemyPanel);
+    m_allowTierMixing->setObjectName(QStringLiteral("apEnemyTierMixing"));
+    m_allowTierMixing->setChecked(true);
+    m_preserveLocomotion = new QCheckBox(tr("Preserve movement style"), m_advancedEnemyPanel);
+    m_preserveLocomotion->setObjectName(QStringLiteral("apEnemyPreserveLocomotion"));
+    m_preserveLocomotion->setChecked(true);
+    m_normalizeScaling = new QCheckBox(tr("Adjust enemy stats for their new role"),
+                                        m_advancedEnemyPanel);
+    m_normalizeScaling->setObjectName(QStringLiteral("apEnemyNormalizeStats"));
+    advancedLayout->addWidget(m_allowTierMixing);
+    advancedLayout->addWidget(m_preserveLocomotion);
+    advancedLayout->addWidget(m_normalizeScaling);
+    m_advancedEnemyPanel->setVisible(false);
+    enemyLayout->addWidget(m_advancedEnemyPanel);
+    connect(m_randomizeEnemies, &QCheckBox::toggled, this,
+            [this](bool enabled) { RefreshEnemizerControls(); });
+    connect(m_expandedCoverage, &QGroupBox::toggled, this,
+            [this](bool) { RefreshEnemizerControls(); });
+    connect(m_advancedEnemyOptions, &QToolButton::toggled, this, [this](bool expanded) {
+        m_advancedEnemyOptions->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
+        m_advancedEnemyPanel->setVisible(expanded);
+    });
+    m_operationControls << m_enemizerGroup;
+    layout->addWidget(m_enemizerGroup);
+
     auto* actions = new QHBoxLayout();
     m_playButton = new QPushButton(tr("&Play"), this);
     m_playButton->setObjectName(QStringLiteral("apPlay"));
@@ -128,6 +209,7 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
     m_playerCombo->setVisible(false);
     m_serverLabel->setVisible(false);
     m_serverEdit->setVisible(false);
+    RefreshEnemizerControls();
     RefreshForSession();
 }
 
@@ -143,6 +225,20 @@ void ApPage::SetBusy(bool busy, const QString& stage) {
     if (busy && !stage.isEmpty()) {
         SetStatus(stage, false);
     }
+    RefreshEnemizerControls();
+}
+
+void ApPage::RefreshEnemizerControls() {
+    if (m_enemizerGroup == nullptr || m_randomizeEnemies == nullptr) {
+        return;
+    }
+    const bool sessionLocked = m_coordinator != nullptr &&
+                               (m_coordinator->HasSession() || m_coordinator->GameStarted());
+    m_enemizerGroup->setEnabled(!m_busy && !sessionLocked);
+    const bool optionsEnabled = !m_busy && !sessionLocked && m_randomizeEnemies->isChecked();
+    m_expandedCoverage->setEnabled(optionsEnabled);
+    m_advancedEnemyOptions->setEnabled(optionsEnabled);
+    m_advancedEnemyPanel->setEnabled(optionsEnabled && m_advancedEnemyOptions->isChecked());
 }
 
 void ApPage::SetStatus(const QString& text, bool isError) {
@@ -273,6 +369,18 @@ void ApPage::PlayClicked() {
     }
     request.server = m_serverEdit->text().trimmed();
     request.password = m_passwordEdit->text();
+    request.enemizer.enabled = m_randomizeEnemies->isChecked();
+    if (request.enemizer.enabled) {
+        request.enemizer.seed = m_enemySeedEdit->text().trimmed();
+        request.enemizer.allowTierMixing = m_allowTierMixing->isChecked();
+        request.enemizer.preserveLocomotion = m_preserveLocomotion->isChecked();
+        request.enemizer.normalizeScaling = m_normalizeScaling->isChecked();
+        if (m_expandedCoverage->isChecked()) {
+            request.enemizer.releaseContracts = m_releaseContracts->isChecked();
+            request.enemizer.releaseSpawns = m_releaseSpawns->isChecked();
+            request.enemizer.releaseChara = m_releaseChara->isChecked();
+        }
+    }
 
     m_cancelled = false;
     m_pollTimer->stop();
@@ -362,7 +470,11 @@ void ApPage::PlayClicked() {
     ok = true;
     SetBusy(false);
     if (ok) {
-        SetStatus(tr("Game and Archipelago client started. Check the game for connection status."), false);
+        QString status = tr("Game and Archipelago client started. Check the game for connection status.");
+        if (!prepared.enemySummary.isEmpty()) {
+            status += QStringLiteral("\n") + prepared.enemySummary;
+        }
+        SetStatus(status, false);
         m_pollTimer->start();
     }
     RefreshForSession();
@@ -464,6 +576,7 @@ void ApPage::PollStatus() {
 }
 
 void ApPage::RefreshForSession() {
+    RefreshEnemizerControls();
     if (m_coordinator->GameStarted()) {
         m_playButton->setText(tr("Return to &game"));
     } else if (m_coordinator->HasSession()) {

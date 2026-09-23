@@ -205,6 +205,21 @@ bool ApCoordinator::Prepare(const ApPlayRequest& request, Prepared* prepared,
         {QStringLiteral("ap_client"), client},
         {QStringLiteral("suppression_dir"), m_backendDir + QStringLiteral("/suppression")},
         {QStringLiteral("cache_root"), m_stateRoot + QStringLiteral("/cache")},
+        {QStringLiteral("enemizer"),
+         QJsonObject{{QStringLiteral("enabled"), request.enemizer.enabled},
+                     {QStringLiteral("seed"), request.enemizer.seed.isEmpty()
+                                                  ? QJsonValue(QJsonValue::Null)
+                                                  : QJsonValue(request.enemizer.seed)},
+                     {QStringLiteral("allow_tier_mixing"), request.enemizer.allowTierMixing},
+                     {QStringLiteral("preserve_locomotion"), request.enemizer.preserveLocomotion},
+                     {QStringLiteral("normalize_scaling"), request.enemizer.normalizeScaling},
+                     {QStringLiteral("boss_canary"), request.enemizer.bossCanary},
+                     {QStringLiteral("boss_pool"), request.enemizer.bossPool.isEmpty()
+                                                       ? QJsonValue(QJsonValue::Null)
+                                                       : QJsonValue(request.enemizer.bossPool)},
+                     {QStringLiteral("release_contracts"), request.enemizer.releaseContracts},
+                     {QStringLiteral("release_spawns"), request.enemizer.releaseSpawns},
+                     {QStringLiteral("release_chara"), request.enemizer.releaseChara}}},
     };
     if (!request.password.isEmpty()) {
         params.insert(QStringLiteral("password"), request.password);
@@ -236,6 +251,25 @@ bool ApCoordinator::Prepare(const ApPlayRequest& request, Prepared* prepared,
         prepared->server = display.value(QStringLiteral("server")).toString();
         prepared->title = display.value(QStringLiteral("title")).toString();
         prepared->reused = response.result.value(QStringLiteral("reused")).toBool();
+        const QJsonObject enemy = response.result.value(QStringLiteral("enemizer")).toObject();
+        if (enemy.value(QStringLiteral("enabled")).toBool()) {
+            QStringList details;
+            const QJsonValue swaps = enemy.value(QStringLiteral("swap_count"));
+            const QJsonValue mapFiles = enemy.value(QStringLiteral("map_file_count"));
+            const QJsonValue aiFiles = enemy.value(QStringLiteral("ai_file_count"));
+            if (swaps.isDouble()) {
+                details.push_back(tr("%1 enemy swaps").arg(swaps.toInt()));
+            }
+            if (mapFiles.isDouble()) {
+                details.push_back(tr("%1 map files").arg(mapFiles.toInt()));
+            }
+            if (aiFiles.isDouble()) {
+                details.push_back(tr("%1 AI files").arg(aiFiles.toInt()));
+            }
+            if (!details.isEmpty()) {
+                prepared->enemySummary = tr("Enemy randomization: %1.").arg(details.join(tr(", ")));
+            }
+        }
     }
     m_title = display.value(QStringLiteral("title")).toString();
     m_playing = false;
