@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [codex/bblauncher-service-extraction]
+    branches: [codex/bblauncher-service-extraction, codex/enemy-randomization-ui]
   workflow_dispatch:
 
 permissions:

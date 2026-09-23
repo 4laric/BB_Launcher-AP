@@ -109,7 +109,7 @@ int main(int argc, char* argv[]) {
         CHECK(response.result.value("selected").toString() == QStringLiteral("Alaric"));
     }
 
-    // Multi-slot seed without a choice fails closed with a named choice.
+    // Inspection returns choices before a player has been selected.
     const QString multiSeed = state.path() + "/multi.bbseed.json";
     WriteJson(multiSeed, QJsonObject{{QStringLiteral("format"), QStringLiteral("bb-seed-request-v1")},
                                      {QStringLiteral("seed"), QStringLiteral("Hunt")},
@@ -122,8 +122,9 @@ int main(int argc, char* argv[]) {
         ApResponse response =
             backend.Call(QStringLiteral("inspect_seed"),
                          QJsonObject{{QStringLiteral("seed_path"), multiSeed}}, 15000);
-        CHECK(!response.ok);
-        CHECK(response.error.code == QStringLiteral("ambiguous-player"));
+        CHECK(response.ok);
+        CHECK(response.result.value("needs_choice").toBool());
+        CHECK(response.result.value("slots").toArray() == QJsonArray({"A", "B"}));
         ApResponse chosen = backend.Call(
             QStringLiteral("inspect_seed"),
             QJsonObject{{QStringLiteral("seed_path"), multiSeed},
