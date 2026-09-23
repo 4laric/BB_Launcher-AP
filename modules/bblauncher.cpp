@@ -13,6 +13,7 @@
 
 #include "Log.h"
 #include "bblauncher.h"
+#include "modules/ApPage.h"
 #include "modules/ChaliceEditor.h"
 #include "modules/Common.h"
 #include "modules/ModDownloader.h"
@@ -73,6 +74,7 @@ BBLauncher::BBLauncher(bool noGUI, bool noInstanceRunning, QWidget* parent)
     m_ipc_client->restartEmulatorFunc = [this]() { RestartEmulator(); };
     m_ipc_client->startGameFunc = [this]() { RunGame(); };
     m_emu_service = std::make_unique<EmulatorService>(m_ipc_client.get(), this);
+    m_ap_coordinator = std::make_unique<ApCoordinator>(m_emu_service.get(), this);
 
     if (std::filesystem::exists(Common::GetBBLFilesPath() / "log.txt"))
         std::filesystem::remove(Common::GetBBLFilesPath() / "log.txt");
@@ -87,6 +89,8 @@ BBLauncher::BBLauncher(bool noGUI, bool noInstanceRunning, QWidget* parent)
 
     ui->IconButtonsLayout->addLayout(
         createIconTextButtonLayout(":mod_manager.png", "Mod Manager", modManagerButton));
+    ui->IconButtonsLayout->addLayout(
+        createIconTextButtonLayout(":BBIcon.png", "Archipelago", archipelagoButton));
     ui->IconButtonsLayout->addLayout(
         createIconTextButtonLayout(":downloader.png", "Mod Downloader", modDownloaderButton));
     ui->IconButtonsLayout->addLayout(
@@ -337,55 +341,11 @@ BBLauncher::BBLauncher(bool noGUI, bool noInstanceRunning, QWidget* parent)
         UpdatePatchesList();
     });
 
-    connect(modManagerButton, &QPushButton::pressed, this, [this]() {
-        if (Config::GameRunning) {
-            QMessageBox::warning(this, "Error", "Mod Manager cannot be used while game is running");
-            return;
-        }
+    connect(modManagerButton, &QPushButton::pressed, this, [this]() { OpenModManager(); });
 
-        if (!CheckBBInstall())
-            return;
-        ModManager* ModWindow = new ModManager(this);
-        ModWindow->exec();
-        UpdateModList();
-    });
+    connect(archipelagoButton, &QPushButton::pressed, this, [this]() { OpenApPage(); });
 
-    connect(shadSettingsButton, &QPushButton::pressed, this, [this]() {
-        if (!CheckBBInstall())
-            return;
-
-        if (!std::filesystem::exists(Common::GetShadUserDir() / "config.json")) {
-            QMessageBox::warning(
-                this, "No global config file found",
-                QString::fromStdString((Common::GetShadUserDir() / "config.json").string() +
-                                       " not found. Run shadPS4 once to generate it."));
-            return;
-        }
-
-        std::string filename = Common::game_serial + ".json";
-        std::filesystem::path gsConfig = Common::GetShadUserDir() / "custom_configs" / filename;
-
-        if (!std::filesystem::exists(gsConfig)) {
-            if (QMessageBox::Yes ==
-                QMessageBox::question(this, "No game-specific config file found",
-                                      QString::fromStdString(gsConfig.string()) +
-                                          " not found. Do you want to create it?",
-                                      QMessageBox::Yes | QMessageBox::No)) {
-                const std::filesystem::path cfgDir = Common::GetShadUserDir() / "custom_configs";
-                std::filesystem::create_directories(cfgDir);
-                const std::filesystem::path path = cfgDir / (Common::game_serial + ".json");
-
-                EmulatorSettingsImpl settings;
-                settings.Load(Common::game_serial);
-                settings.Save(Common::game_serial);
-            } else {
-                return;
-            }
-        }
-
-        ShadSettings* ShadSettingsWindow = new ShadSettings(m_ipc_client, this);
-        ShadSettingsWindow->exec();
-    });
+    connect(shadSettingsButton, &QPushButton::pressed, this, [this]() { OpenShadSettings(); });
 
     connect(launcherSettingsButton, &QPushButton::pressed, this, [this]() {
         LauncherSettings* LauncherSettingsWindow = new LauncherSettings(this);
@@ -1024,6 +984,89 @@ void BBLauncher::StartEmulator(std::filesystem::path path, QStringList args) {
     m_lastIdentity = identity;
 
     Config::GameRunning = true;
+}
+
+void BBLauncher::OpenModManager() {
+    if (Config::GameRunning) {
+        QMessageBox::warning(this, "Error", "Mod Manager cannot be used while game is running");
+        return;
+    }
+
+    if (!CheckBBInstall())
+        return;
+    ModManager* ModWindow = new ModManager(this);
+    ModWindow->exec();
+    UpdateModList();
+}
+
+void BBLauncher::OpenShadSettings() {
+    if (!CheckBBInstall())
+        return;
+
+    if (!std::filesystem::exists(Common::GetShadUserDir() / "config.json")) {
+        QMessageBox::warning(
+            this, "No global config file found",
+            QString::fromStdString((Common::GetShadUserDir() / "config.json").string() +
+                                   " not found. Run shadPS4 once to generate it."));
+        return;
+    }
+
+    std::string filename = Common::game_serial + ".json";
+    std::filesystem::path gsConfig = Common::GetShadUserDir() / "custom_configs" / filename;
+
+    if (!std::filesystem::exists(gsConfig)) {
+        if (QMessageBox::Yes ==
+            QMessageBox::question(this, "No game-specific config file found",
+                                  QString::fromStdString(gsConfig.string()) +
+                                      " not found. Do you want to create it?",
+                                  QMessageBox::Yes | QMessageBox::No)) {
+            const std::filesystem::path cfgDir = Common::GetShadUserDir() / "custom_configs";
+            std::filesystem::create_directories(cfgDir);
+            const std::filesystem::path path = cfgDir / (Common::game_serial + ".json");
+
+            EmulatorSettingsImpl settings;
+            settings.Load(Common::game_serial);
+            settings.Save(Common::game_serial);
+        } else {
+            return;
+        }
+    }
+
+    ShadSettings* ShadSettingsWindow = new ShadSettings(m_ipc_client, this);
+    ShadSettingsWindow->exec();
+}
+
+void BBLauncher::OpenApPage() {
+    if (!CheckBBInstall())
+        return;
+    ApPage* page = new ApPage(m_ap_coordinator.get(), this);
+    connect(page, &ApPage::requestMods, this, [this]() { OpenModManager(); });
+    connect(page, &ApPage::requestEmulatorSettings, this, [this]() { OpenShadSettings(); });
+    page->exec();
+}
+
+int BBLauncher::RunApHeadless(const QString& seedPath, const QString& player,
+                              const QString& server) {
+    QString error;
+    QString gameRoot;
+    Common::PathToQString(gameRoot, Common::installPath);
+    const QString backendDir =
+        QCoreApplication::applicationDirPath() + QStringLiteral("/ap_backend");
+    QString stateRoot = ApBackend::DefaultStateRoot();
+    if (!m_ap_coordinator->Configure(gameRoot, backendDir, stateRoot, &error)) {
+        LogError(error.toStdString());
+        return 1;
+    }
+    ApPlayRequest request;
+    request.gameRoot = gameRoot;
+    request.seedPath = seedPath;
+    request.playerName = player;
+    request.server = server;
+    const int code = m_ap_coordinator->RunHeadless(request, &error);
+    if (code != 0) {
+        LogError(error.toStdString());
+    }
+    return code;
 }
 
 void BBLauncher::OpenFolders() {

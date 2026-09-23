@@ -22,6 +22,7 @@
 #include <QVBoxLayout>
 
 #include "CheckUpdate.h"
+#include "modules/ApFork.h"
 #include "modules/Common.h"
 #include "settings/updater/BuildInfo.h"
 
@@ -117,7 +118,9 @@ void CheckUpdate::setupUI(const QString& downloadUrl, const QString& latestDate,
 
 void CheckUpdate::CheckForUpdates(const bool showMessage) {
     QString CurrentBranch = Build::Branch;
-    QUrl url = QUrl("https://api.github.com/repos/rainmakerv3/BB_Launcher/releases");
+    // Fork builds query the fork channel, never upstream: an update must
+    // not replace the fork with upstream BBLauncher.
+    QUrl url = QUrl(ApFork::UpdateApiUrl());
 
     QNetworkRequest request(url);
     QNetworkReply* reply = networkManager->get(request);
@@ -184,24 +187,14 @@ void CheckUpdate::CheckForUpdates(const bool showMessage) {
 
         for (const QJsonValue& assetValue : assets) {
             QJsonObject assetObj = assetValue.toObject();
-            if (CurrentBranch == "noUAC") {
-                if (assetObj["name"].toString().contains("noUAC")) {
-                    downloadUrl = assetObj["browser_download_url"].toString();
-                    found = true;
-                    break;
-                }
-            } else if (CurrentBranch == "downloader") {
-                if (assetObj["name"].toString().contains("Downloader")) {
-                    downloadUrl = assetObj["browser_download_url"].toString();
-                    found = true;
-                    break;
-                }
-            } else {
-                if (assetObj["name"].toString().contains(platformString)) {
-                    downloadUrl = assetObj["browser_download_url"].toString();
-                    found = true;
-                    break;
-                }
+            // Fork builds additionally require the fork marker in the
+            // asset name, so a misconfigured feed still cannot install
+            // an upstream build over the fork.
+            if (ApFork::AssetMatches(assetObj["name"].toString(), CurrentBranch,
+                                     platformString)) {
+                downloadUrl = assetObj["browser_download_url"].toString();
+                found = true;
+                break;
             }
         }
 
@@ -236,10 +229,7 @@ void CheckUpdate::CheckForUpdates(const bool showMessage) {
 void CheckUpdate::requestChangelog(const QString& currentRev, const QString& latestRev,
                                    const QString& downloadUrl, const QString& latestDate,
                                    const QString& currentDate) {
-    QString compareUrlString =
-        QString("https://api.github.com/repos/rainmakerv3/BB_Launcher/compare/%1...%2")
-            .arg(currentRev)
-            .arg(latestRev);
+    QString compareUrlString = ApFork::CompareUrl(currentRev, latestRev);
 
     QUrl compareUrl(compareUrlString);
     QNetworkRequest compareRequest(compareUrl);
