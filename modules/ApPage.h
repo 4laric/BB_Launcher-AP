@@ -82,6 +82,8 @@ class ApPage : public QDialog {
     QLineEdit* m_passwordEdit = nullptr;
     QGroupBox* m_enemizerGroup = nullptr;
     QComboBox* m_enemyMode = nullptr;
+    QWidget* m_bossPoolRow = nullptr;
+    QComboBox* m_bossPool = nullptr;
     QLabel* m_standaloneBossNote = nullptr;
     QLineEdit* m_enemySeedEdit = nullptr;
     QWidget* m_enemySeedRow = nullptr;
