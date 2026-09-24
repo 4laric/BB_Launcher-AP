@@ -87,6 +87,20 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/settings/updater/cmake-modules/")
 include(GetGitRevisionDescription)
 get_git_head_revision(GIT_REF_SPEC GIT_REV)
+if(NOT GIT_REV)
+    # GetGitRevisionDescription can miss HEAD in a linked Git worktree.
+    # Embed the exact source commit for receipts and packaged provenance.
+    execute_process(
+        COMMAND git rev-parse --verify HEAD
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE GIT_REV
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE GIT_REV_RESULT
+        ERROR_QUIET)
+    if(NOT GIT_REV_RESULT EQUAL 0)
+        set(GIT_REV "unknown")
+    endif()
+endif()
 git_describe(GIT_DESC --always --long --dirty)
 git_branch_name(GIT_BRANCH)
 string(TIMESTAMP BUILD_DATE "%Y-%m-%d %H:%M:%S")

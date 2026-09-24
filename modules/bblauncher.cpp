@@ -90,7 +90,7 @@ BBLauncher::BBLauncher(bool noGUI, bool noInstanceRunning, QWidget* parent)
     ui->IconButtonsLayout->addLayout(
         createIconTextButtonLayout(":mod_manager.png", "Mod Manager", modManagerButton));
     ui->IconButtonsLayout->addLayout(
-        createIconTextButtonLayout(":BBIcon.png", "Archipelago", archipelagoButton));
+        createIconTextButtonLayout(":BBIcon.png", "Randomizer", archipelagoButton));
     ui->IconButtonsLayout->addLayout(
         createIconTextButtonLayout(":downloader.png", "Mod Downloader", modDownloaderButton));
     ui->IconButtonsLayout->addLayout(
@@ -145,6 +145,22 @@ BBLauncher::BBLauncher(bool noGUI, bool noInstanceRunning, QWidget* parent)
         QString installQString;
         Common::PathToQString(installQString, Common::installPath);
         ui->ExeLabel->setText(installQString);
+    }
+
+    // Restore the exact managed randomizer package before any of the main
+    // launch routes become usable. This only recovers ModService state and
+    // installs the emulator preflight; backend startup remains on demand.
+    if (!Common::installPath.empty() &&
+        std::filesystem::exists(Common::installPath)) {
+        QString gameRoot;
+        Common::PathToQString(gameRoot, Common::installPath);
+        QString recoveryError;
+        if (!m_ap_coordinator->Configure(
+                gameRoot,
+                QCoreApplication::applicationDirPath() + QStringLiteral("/ap_backend"),
+                ApBackend::DefaultStateRoot(), &recoveryError, {}, false)) {
+            LogError(recoveryError.toStdString());
+        }
     }
 
     QString shadLabelString;

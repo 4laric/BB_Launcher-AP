@@ -3,14 +3,18 @@
 
 #include <QApplication>
 #include <QComboBox>
+#include <QColor>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFontDatabase>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QPalette>
 #include <QPushButton>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QSignalSpy>
@@ -109,6 +113,8 @@ class ApUiTest final : public QObject {
         qputenv("BB_AP_STATE_ROOT", (m_scratch->path() + QStringLiteral("/state")).toLocal8Bit());
         m_capturedPrepare = m_scratch->path() + QStringLiteral("/prepare-request.json");
         qputenv("BB_AP_TEST_CAPTURE_REQUEST", m_capturedPrepare.toLocal8Bit());
+        m_opLog = m_scratch->path() + QStringLiteral("/backend-ops.txt");
+        qputenv("BB_AP_TEST_OP_LOG", m_opLog.toLocal8Bit());
 
         const QString package = QDir::currentPath() +
                                 QStringLiteral("/BBLauncher/Mods/Archipelago-Fixture/dvdroot_ps4/map");
@@ -126,6 +132,7 @@ class ApUiTest final : public QObject {
         m_coordinator.reset();
         m_emulator.reset();
         qunsetenv("BB_AP_TEST_CAPTURE_REQUEST");
+        qunsetenv("BB_AP_TEST_OP_LOG");
         QVERIFY(QDir::setCurrent(m_previousCwd));
         m_scratch.reset();
     }
@@ -142,39 +149,37 @@ class ApUiTest final : public QObject {
         auto* seedEdit = page.findChild<QLineEdit*>(QStringLiteral("apSeedPath"));
         auto* player = page.findChild<QComboBox*>(QStringLiteral("apPlayerChoice"));
         auto* play = page.findChild<QPushButton*>(QStringLiteral("apPlay"));
+        auto* randomize = page.findChild<QPushButton*>(QStringLiteral("apRandomize"));
         auto* changeSeed = page.findChild<QPushButton*>(QStringLiteral("apSwitchSeed"));
-        auto* randomize = page.findChild<QCheckBox*>(QStringLiteral("apRandomizeEnemies"));
-        auto* coverage = page.findChild<QGroupBox*>(QStringLiteral("apExpandedEnemyCoverage"));
-        auto* contracts = page.findChild<QCheckBox*>(QStringLiteral("apEnemyScriptedBehavior"));
-        auto* spawns = page.findChild<QCheckBox*>(QStringLiteral("apEnemyAmbushes"));
-        auto* hunters = page.findChild<QCheckBox*>(QStringLiteral("apEnemyHunters"));
+        auto* enemyMode = page.findChild<QComboBox*>(QStringLiteral("enemyMode"));
         auto* advanced = page.findChild<QToolButton*>(QStringLiteral("apAdvancedEnemyOptions"));
         auto* enemySeed = page.findChild<QLineEdit*>(QStringLiteral("apEnemySeed"));
-        QVERIFY(seedEdit && player && play && changeSeed);
-        QVERIFY(randomize && coverage && contracts && spawns && hunters && advanced && enemySeed);
-        QVERIFY(randomize->isChecked());
-        QVERIFY(coverage->isChecked());
-        QVERIFY(contracts->isChecked());
-        QVERIFY(spawns->isChecked());
-        QVERIFY(hunters->isChecked());
-        randomize->setChecked(false);
-        QVERIFY(!coverage->isEnabled());
-        randomize->setChecked(true);
-        QVERIFY(coverage->isEnabled());
+        QVERIFY(seedEdit && player && play && randomize && changeSeed);
+        QVERIFY(enemyMode && advanced && enemySeed);
+        QCOMPARE(enemyMode->currentIndex(), 0);
+        QVERIFY(!play->isEnabled());
+        enemyMode->setCurrentIndex(2);
+        QVERIFY(!advanced->isEnabled());
+        enemyMode->setCurrentIndex(1);
+        QVERIFY(advanced->isEnabled());
         advanced->click();
         enemySeed->setText(QStringLiteral("fixture-enemy-seed"));
-        spawns->setChecked(false);
         seedEdit->setText(seedPath);
         QVERIFY(QMetaObject::invokeMethod(&page, "SeedChanged"));
         QVERIFY(player->isVisible());
         QCOMPARE(player->count(), 2);
         player->setCurrentText(QStringLiteral("Bob"));
+        QTest::mouseClick(randomize, Qt::LeftButton);
+        QVERIFY(m_coordinator->HasSession());
+        QVERIFY(!m_coordinator->GameStarted());
+        QCOMPARE(m_emulator->startCalls, 0);
+        QVERIFY(play->isEnabled());
         QTest::mouseClick(play, Qt::LeftButton);
 
         QVERIFY(m_coordinator->IsPlaying());
         QCOMPARE(m_coordinator->displayTitle(), QStringLiteral("Fixture seed — Bob"));
         QCOMPARE(m_emulator->startCalls, 1);
-        QVERIFY(!randomize->isEnabled());
+        QVERIFY(!enemyMode->isEnabled());
         QFile captured(m_capturedPrepare);
         QVERIFY(captured.open(QIODevice::ReadOnly));
         const QJsonObject capturedRequest =
@@ -185,14 +190,14 @@ class ApUiTest final : public QObject {
         QCOMPARE(enemy.value(QStringLiteral("enabled")).toBool(), true);
         QCOMPARE(enemy.value(QStringLiteral("seed")).toString(),
                  QStringLiteral("fixture-enemy-seed"));
-        QCOMPARE(enemy.value(QStringLiteral("allow_tier_mixing")).toBool(), true);
-        QCOMPARE(enemy.value(QStringLiteral("preserve_locomotion")).toBool(), true);
+        QCOMPARE(enemy.value(QStringLiteral("allow_tier_mixing")).toBool(), false);
+        QCOMPARE(enemy.value(QStringLiteral("preserve_locomotion")).toBool(), false);
         QCOMPARE(enemy.value(QStringLiteral("normalize_scaling")).toBool(), false);
         QCOMPARE(enemy.value(QStringLiteral("boss_canary")).toBool(), false);
-        QVERIFY(enemy.value(QStringLiteral("boss_pool")).isNull());
         QCOMPARE(enemy.value(QStringLiteral("release_contracts")).toBool(), true);
-        QCOMPARE(enemy.value(QStringLiteral("release_spawns")).toBool(), false);
+        QCOMPARE(enemy.value(QStringLiteral("release_spawns")).toBool(), true);
         QCOMPARE(enemy.value(QStringLiteral("release_chara")).toBool(), true);
+        QCOMPARE(enemy.value(QStringLiteral("boss_pool")).toString(), QStringLiteral("reviewed"));
         QVERIFY(page.findChild<QLabel*>(QStringLiteral("apStatus"))->text()
                     .contains(QStringLiteral("117 enemy swaps")));
         QVERIFY(page.findChild<QLabel*>(QStringLiteral("apStatus"))->text()
@@ -232,7 +237,7 @@ class ApUiTest final : public QObject {
         QVERIFY2(!m_coordinator->HasSession(), status ? qPrintable(status->text()) : "missing status");
         QVERIFY(!m_coordinator->GameStarted());
         QCOMPARE(m_emulator->stopCalls, 1);
-        QVERIFY(randomize->isEnabled());
+        QVERIFY(enemyMode->isEnabled());
         QVERIFY(!overlay.exists());
         QVERIFY(!QDir(QDir::currentPath() + QStringLiteral("/BBLauncher/Mods-Active (DO NOT DELETE)/Archipelago-Fixture")).exists());
         QVERIFY(QFile::exists(QDir::currentPath() +
@@ -252,9 +257,11 @@ class ApUiTest final : public QObject {
         auto* seedEdit = page.findChild<QLineEdit*>(QStringLiteral("apSeedPath"));
         auto* player = page.findChild<QComboBox*>(QStringLiteral("apPlayerChoice"));
         auto* play = page.findChild<QPushButton*>(QStringLiteral("apPlay"));
+        auto* randomize = page.findChild<QPushButton*>(QStringLiteral("apRandomize"));
         seedEdit->setText(seedPath);
         QVERIFY(QMetaObject::invokeMethod(&page, "SeedChanged"));
         player->setCurrentText(QStringLiteral("Alice"));
+        QTest::mouseClick(randomize, Qt::LeftButton);
         QTest::mouseClick(play, Qt::LeftButton);
         QVERIFY(m_coordinator->HasSession()); // Preparation completed.
         QVERIFY(!m_coordinator->IsPlaying());
@@ -318,9 +325,321 @@ class ApUiTest final : public QObject {
         QVERIFY(response.ok);
     }
 
+    void standalonePrepareVerifyLaunchWithoutClient() {
+        ApPage page(m_coordinator.get());
+        page.show();
+        auto* mode = page.findChild<QComboBox*>(QStringLiteral("playMode"));
+        auto* seed = page.findChild<QLineEdit*>(QStringLiteral("standaloneSeed"));
+        auto* dlc = page.findChild<QCheckBox*>(QStringLiteral("includeDlc"));
+        auto* enemy = page.findChild<QComboBox*>(QStringLiteral("enemyMode"));
+        auto* randomize = page.findChild<QPushButton*>(QStringLiteral("apRandomize"));
+        auto* launch = page.findChild<QPushButton*>(QStringLiteral("apPlay"));
+        QVERIFY(mode && seed && dlc && enemy && randomize && launch);
+        mode->setCurrentIndex(1);
+        QVERIFY(!page.findChild<QLineEdit*>(QStringLiteral("apSeedPath"))->isVisible());
+        QVERIFY(seed->isVisible());
+        QVERIFY(!enemy->model()->index(1, 0).flags().testFlag(Qt::ItemIsEnabled));
+        seed->setText(QStringLiteral("standalone-test-seed"));
+        dlc->setChecked(false);
+        QTest::mouseClick(randomize, Qt::LeftButton);
+        QVERIFY(m_coordinator->HasSession());
+        QVERIFY(!m_coordinator->GameStarted());
+        QCOMPARE(m_emulator->startCalls, 0);
+        QVERIFY(launch->isEnabled());
+        QFile captured(m_capturedPrepare);
+        QVERIFY(captured.open(QIODevice::ReadOnly));
+        const QJsonObject request = QJsonDocument::fromJson(captured.readAll()).object();
+        QCOMPARE(request.value(QStringLiteral("op")).toString(), QStringLiteral("prepare_standalone"));
+        const QJsonObject params = request.value(QStringLiteral("params")).toObject();
+        QCOMPARE(params.value(QStringLiteral("seed")).toString(), QStringLiteral("standalone-test-seed"));
+        QCOMPARE(params.value(QStringLiteral("include_dlc")).toBool(), false);
+        QCOMPARE(params.value(QStringLiteral("randomize_enemies")).toBool(), true);
+        QVERIFY(!params.contains(QStringLiteral("server")));
+        QVERIFY(!params.contains(QStringLiteral("player_name")));
+        QTest::mouseClick(launch, Qt::LeftButton);
+        QVERIFY(m_coordinator->GameStarted());
+        QCOMPARE(m_emulator->startCalls, 1);
+        QFile ops(m_opLog);
+        QVERIFY(ops.open(QIODevice::ReadOnly));
+        const QByteArray log = ops.readAll();
+        QVERIFY(log.contains("verify_standalone\n"));
+        QVERIFY(!log.contains("connect_and_start_client"));
+        QVERIFY(!log.contains("verify_and_arm"));
+        QVERIFY(QFile::exists(m_gameRoot +
+                              QStringLiteral("-mods/dvdroot_ps4/map/standalone.bin")));
+    }
+
+    void standaloneReceiptChangeBlocksActivation() {
+        ApPage page(m_coordinator.get());
+        page.show();
+        page.findChild<QComboBox*>(QStringLiteral("playMode"))->setCurrentIndex(1);
+        page.findChild<QLineEdit*>(QStringLiteral("standaloneSeed"))
+            ->setText(QStringLiteral("tamper-test"));
+        QTest::mouseClick(page.findChild<QPushButton*>(QStringLiteral("apRandomize")), Qt::LeftButton);
+        const QString receipt = QDir::currentPath() +
+            QStringLiteral("/BBLauncher/Mods/Bloodborne-Standalone-Fixture/receipt.json");
+        QFile changed(receipt);
+        QVERIFY(changed.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        changed.write("tampered");
+        changed.close();
+        QTest::mouseClick(page.findChild<QPushButton*>(QStringLiteral("apPlay")), Qt::LeftButton);
+        QCOMPARE(m_emulator->startCalls, 0);
+        QVERIFY(!m_coordinator->GameStarted());
+        QVERIFY(!QFile::exists(m_gameRoot +
+                              QStringLiteral("-mods/dvdroot_ps4/map/standalone.bin")));
+    }
+
+    void modeTransitionsRemoveOnlyManagedPackage() {
+        const QString other = QDir::currentPath() +
+            QStringLiteral("/BBLauncher/Mods/Unrelated/dvdroot_ps4/map");
+        QVERIFY(QDir().mkpath(other));
+        QFile otherPayload(other + QStringLiteral("/unrelated.bin"));
+        QVERIFY(otherPayload.open(QIODevice::WriteOnly));
+        otherPayload.write("keep-me");
+        otherPayload.close();
+        const QString backendDir = QCoreApplication::applicationDirPath() +
+                                   QStringLiteral("/ap_backend");
+        QString error;
+        QVERIFY2(m_coordinator->Configure(m_gameRoot, backendDir,
+                  ApBackend::DefaultStateRoot(), &error), qPrintable(error));
+        modservice::Plan otherPlan;
+        QVERIFY(m_coordinator->modService()->PlanActivate("Unrelated", otherPlan).ok);
+        QVERIFY(m_coordinator->modService()->Commit(otherPlan).ok);
+        const QString seedPath = m_scratch->path() + QStringLiteral("/fixture.bbseed.json");
+        QFile seed(seedPath);
+        QVERIFY(seed.open(QIODevice::WriteOnly));
+        seed.write("fixture");
+        seed.close();
+        ApPlayRequest ap{m_gameRoot, seedPath, QStringLiteral("Alice"), {}, {}};
+        ApCoordinator::Prepared apPrepared;
+        QVERIFY2(m_coordinator->Prepare(ap, &apPrepared, &error), qPrintable(error));
+        QVERIFY2(m_coordinator->Activate(apPrepared, false, nullptr, &error), qPrintable(error));
+        QVERIFY2(m_coordinator->Arm(apPrepared, &error), qPrintable(error));
+        QVERIFY2(m_coordinator->StartGame(&error), qPrintable(error));
+        QVERIFY2(m_coordinator->Connect(&error), qPrintable(error));
+        m_emulator->running = false;
+        QVERIFY2(m_coordinator->GameClosed(&error), qPrintable(error));
+        StandalonePlayRequest standalone{m_gameRoot, QStringLiteral("transition-seed"), true, true};
+        ApCoordinator::Prepared standalonePrepared;
+        QVERIFY2(m_coordinator->PrepareStandalone(standalone, &standalonePrepared, &error),
+                 qPrintable(error));
+        QVERIFY2(m_coordinator->Activate(standalonePrepared, false, nullptr, &error),
+                 qPrintable(error));
+        QVERIFY(!QDir(QDir::currentPath() + QStringLiteral(
+            "/BBLauncher/Mods-Active (DO NOT DELETE)/Archipelago-Fixture")).exists());
+        QVERIFY(QDir(QDir::currentPath() + QStringLiteral(
+            "/BBLauncher/Mods-Active (DO NOT DELETE)/Bloodborne-Standalone-Fixture")).exists());
+        QVERIFY2(m_coordinator->StartGame(&error), qPrintable(error));
+        m_emulator->running = false;
+        QVERIFY2(m_coordinator->GameClosed(&error), qPrintable(error));
+        QVERIFY2(m_coordinator->Prepare(ap, &apPrepared, &error), qPrintable(error));
+        QVERIFY2(m_coordinator->Activate(apPrepared, false, nullptr, &error), qPrintable(error));
+        QVERIFY(!QDir(QDir::currentPath() + QStringLiteral(
+            "/BBLauncher/Mods-Active (DO NOT DELETE)/Bloodborne-Standalone-Fixture")).exists());
+        QVERIFY(QDir(QDir::currentPath() + QStringLiteral(
+            "/BBLauncher/Mods-Active (DO NOT DELETE)/Archipelago-Fixture")).exists());
+        QVERIFY2(m_coordinator->SwitchToRegularPlay(&error), qPrintable(error));
+        QVERIFY(QDir(QDir::currentPath() + QStringLiteral(
+            "/BBLauncher/Mods-Active (DO NOT DELETE)/Unrelated")).exists());
+        QVERIFY(!QDir(QDir::currentPath() + QStringLiteral(
+            "/BBLauncher/Mods-Active (DO NOT DELETE)/Archipelago-Fixture")).exists());
+    }
+
+    void restartRestoresExactOwnedPackageForBothModes() {
+        const QString backendDir = QCoreApplication::applicationDirPath() +
+                                   QStringLiteral("/ap_backend");
+        const QString stateRoot = ApBackend::DefaultStateRoot();
+        QString error;
+        auto configure = [&] {
+            return m_coordinator->Configure(m_gameRoot, backendDir, stateRoot, &error);
+        };
+        QVERIFY2(configure(), qPrintable(error));
+        const QString unrelatedPath = QDir::currentPath() +
+            QStringLiteral("/BBLauncher/Mods/Unrelated/dvdroot_ps4/map");
+        QVERIFY(QDir().mkpath(unrelatedPath));
+        QFile unrelated(unrelatedPath + QStringLiteral("/keep.bin"));
+        QVERIFY(unrelated.open(QIODevice::WriteOnly));
+        unrelated.write("keep");
+        unrelated.close();
+        modservice::Plan other;
+        QVERIFY(m_coordinator->modService()->PlanActivate("Unrelated", other).ok);
+        QVERIFY(m_coordinator->modService()->Commit(other).ok);
+        const QString seedPath = m_scratch->path() + QStringLiteral("/fixture.bbseed.json");
+        QFile seed(seedPath);
+        QVERIFY(seed.open(QIODevice::WriteOnly));
+        seed.write("fixture");
+        seed.close();
+        ApPlayRequest ap{m_gameRoot, seedPath, QStringLiteral("Alice"), {}, {}};
+        ApCoordinator::Prepared prepared;
+        QVERIFY2(m_coordinator->Prepare(ap, &prepared, &error), qPrintable(error));
+        QVERIFY2(m_coordinator->Activate(prepared, false, nullptr, &error), qPrintable(error));
+        const QString ownership = stateRoot +
+                                  QStringLiteral("/integrated/cxx-owned-active.json");
+        QVERIFY(QFile::exists(ownership));
+
+        m_coordinator.reset();
+        m_coordinator = std::make_unique<ApCoordinator>(m_emulator.get());
+        QVERIFY2(m_coordinator->Configure(m_gameRoot, backendDir, stateRoot,
+                                          &error, {}, false), qPrintable(error));
+        QVERIFY(m_coordinator->backend() == nullptr);
+        QVERIFY(!m_coordinator->Preflight(QStringLiteral("start-game")).isEmpty());
+        StandalonePlayRequest standalone{m_gameRoot, QStringLiteral("new-mode"), true, true};
+        QVERIFY2(m_coordinator->PrepareStandalone(standalone, &prepared, &error),
+                 qPrintable(error));
+        QVERIFY2(m_coordinator->Activate(prepared, false, nullptr, &error), qPrintable(error));
+        QVERIFY(!QDir(QDir::currentPath() + QStringLiteral(
+            "/BBLauncher/Mods-Active (DO NOT DELETE)/Archipelago-Fixture")).exists());
+        QVERIFY(QDir(QDir::currentPath() + QStringLiteral(
+            "/BBLauncher/Mods-Active (DO NOT DELETE)/Bloodborne-Standalone-Fixture")).exists());
+
+        m_coordinator.reset();
+        m_coordinator = std::make_unique<ApCoordinator>(m_emulator.get());
+        QVERIFY2(configure(), qPrintable(error));
+        QVERIFY2(m_coordinator->Prepare(ap, &prepared, &error), qPrintable(error));
+        QVERIFY2(m_coordinator->Activate(prepared, false, nullptr, &error), qPrintable(error));
+        QVERIFY(!QDir(QDir::currentPath() + QStringLiteral(
+            "/BBLauncher/Mods-Active (DO NOT DELETE)/Bloodborne-Standalone-Fixture")).exists());
+
+        m_coordinator.reset();
+        m_coordinator = std::make_unique<ApCoordinator>(m_emulator.get());
+        QVERIFY2(configure(), qPrintable(error));
+        QVERIFY2(m_coordinator->SwitchToRegularPlay(&error), qPrintable(error));
+        QVERIFY(!QFile::exists(ownership));
+        QVERIFY(QDir(QDir::currentPath() + QStringLiteral(
+            "/BBLauncher/Mods-Active (DO NOT DELETE)/Unrelated")).exists());
+        QVERIFY(!QDir(QDir::currentPath() + QStringLiteral(
+            "/BBLauncher/Mods-Active (DO NOT DELETE)/Archipelago-Fixture")).exists());
+    }
+
+    void failedStartupRecoveryBlocksRegularGameStart() {
+        const QString stateRoot = ApBackend::DefaultStateRoot();
+        const QString journalDir = stateRoot +
+            QStringLiteral("/integrated/cxx-journal");
+        QVERIFY(QDir().mkpath(journalDir));
+        QFile journal(journalDir + QStringLiteral("/modservice.jsonl"));
+        QVERIFY(journal.open(QIODevice::WriteOnly));
+        journal.write("{\"kind\":\"plan\"\n");
+        journal.close();
+        QString error;
+        QVERIFY(!m_coordinator->Configure(
+            m_gameRoot, QCoreApplication::applicationDirPath() +
+                QStringLiteral("/ap_backend"), stateRoot, &error, {}, false));
+        QVERIFY(error.contains(QStringLiteral("malformed")));
+        QString refused;
+        QVERIFY(!m_emulator->Check(QStringLiteral("start-game"), &refused));
+        QVERIFY(refused.contains(QStringLiteral("recovery")));
+        QVERIFY(m_coordinator->backend() == nullptr);
+    }
+
+    void savedChoicesRestoreWithoutAuthorityOrPassword() {
+        {
+            ApPage page(m_coordinator.get());
+            auto* mode = page.findChild<QComboBox*>(QStringLiteral("playMode"));
+            auto* enemy = page.findChild<QComboBox*>(QStringLiteral("enemyMode"));
+            auto* apSeed = page.findChild<QLineEdit*>(QStringLiteral("apSeedPath"));
+            apSeed->setText(QStringLiteral("C:/fixture/ap-seed.zip"));
+            enemy->setCurrentIndex(1);
+            mode->setCurrentIndex(1);
+            enemy->setCurrentIndex(2);
+            page.findChild<QLineEdit*>(QStringLiteral("standaloneSeed"))
+                ->setText(QStringLiteral("remembered-seed"));
+            page.findChild<QCheckBox*>(QStringLiteral("includeDlc"))->setChecked(false);
+            for (QLineEdit* edit : page.findChildren<QLineEdit*>()) {
+                if (edit->echoMode() == QLineEdit::Password) {
+                    edit->setText(QStringLiteral("do-not-save-this"));
+                }
+            }
+        }
+        const QString settingsPath = ApBackend::DefaultStateRoot() +
+                                     QStringLiteral("/ui-settings.json");
+        QFile settings(settingsPath);
+        QVERIFY(settings.open(QIODevice::ReadOnly));
+        QVERIFY(!settings.readAll().contains("do-not-save-this"));
+        ApPage restored(m_coordinator.get());
+        auto* mode = restored.findChild<QComboBox*>(QStringLiteral("playMode"));
+        auto* enemy = restored.findChild<QComboBox*>(QStringLiteral("enemyMode"));
+        auto* launch = restored.findChild<QPushButton*>(QStringLiteral("apPlay"));
+        QCOMPARE(mode->currentIndex(), 1);
+        QCOMPARE(enemy->currentIndex(), 2);
+        QCOMPARE(restored.findChild<QLineEdit*>(QStringLiteral("standaloneSeed"))->text(),
+                 QStringLiteral("remembered-seed"));
+        QVERIFY(!restored.findChild<QCheckBox*>(QStringLiteral("includeDlc"))->isChecked());
+        QVERIFY(launch->isEnabled()); // Can rebuild, but has no prepared authority.
+        mode->setCurrentIndex(0);
+        QCOMPARE(enemy->currentIndex(), 1);
+        QCOMPARE(restored.findChild<QLineEdit*>(QStringLiteral("apSeedPath"))->text(),
+                 QStringLiteral("C:/fixture/ap-seed.zip"));
+    }
+
+    void launchBuildsWhenInputsChanged() {
+        ApPage page(m_coordinator.get());
+        page.show();
+        page.findChild<QComboBox*>(QStringLiteral("playMode"))->setCurrentIndex(1);
+        auto* seed = page.findChild<QLineEdit*>(QStringLiteral("standaloneSeed"));
+        seed->setText(QStringLiteral("first-seed"));
+        auto* randomize = page.findChild<QPushButton*>(QStringLiteral("apRandomize"));
+        auto* launch = page.findChild<QPushButton*>(QStringLiteral("apPlay"));
+        QTest::mouseClick(randomize, Qt::LeftButton);
+        QCOMPARE(m_emulator->startCalls, 0);
+        seed->setText(QStringLiteral("second-seed"));
+        QVERIFY(launch->isEnabled());
+        QTest::mouseClick(launch, Qt::LeftButton);
+        QCOMPARE(m_emulator->startCalls, 1);
+        QFile captured(m_capturedPrepare);
+        QVERIFY(captured.open(QIODevice::ReadOnly));
+        const QJsonObject params = QJsonDocument::fromJson(captured.readAll()).object()
+                                       .value(QStringLiteral("params")).toObject();
+        QCOMPARE(params.value(QStringLiteral("seed")).toString(),
+                 QStringLiteral("second-seed"));
+        QFile ops(m_opLog);
+        QVERIFY(ops.open(QIODevice::ReadOnly));
+        const QByteArray log = ops.readAll();
+        QVERIFY(log.indexOf("prepare_standalone") < log.lastIndexOf("prepare_standalone"));
+        QVERIFY(log.lastIndexOf("prepare_standalone") < log.lastIndexOf("verify_standalone"));
+    }
+
+    void renderForms() {
+        const QString output = QCoreApplication::applicationDirPath();
+        const int fontId = QFontDatabase::addApplicationFont(
+            QStringLiteral("C:/Windows/Fonts/segoeui.ttf"));
+        if (fontId >= 0) QApplication::setFont(QFont(QStringLiteral("Segoe UI"), 9));
+        // Match Config::SetTheme("Dark") without reading the user's config.
+        QPalette palette;
+        palette.setColor(QPalette::Window, QColor(50, 50, 50));
+        palette.setColor(QPalette::WindowText, Qt::white);
+        palette.setColor(QPalette::Base, QColor(20, 20, 20));
+        palette.setColor(QPalette::AlternateBase, QColor(53, 53, 53));
+        palette.setColor(QPalette::ToolTipBase, Qt::white);
+        palette.setColor(QPalette::ToolTipText, Qt::white);
+        palette.setColor(QPalette::Text, Qt::white);
+        palette.setColor(QPalette::Button, QColor(53, 53, 53));
+        palette.setColor(QPalette::ButtonText, Qt::white);
+        palette.setColor(QPalette::BrightText, Qt::red);
+        palette.setColor(QPalette::Link, QColor(42, 130, 218));
+        palette.setColor(QPalette::Highlight, QColor(42, 130, 218));
+        palette.setColor(QPalette::HighlightedText, Qt::black);
+        QApplication::setPalette(palette);
+        ApPage page(m_coordinator.get());
+        page.resize(820, 620);
+        page.show();
+        QApplication::processEvents();
+        QVERIFY(page.grab().save(output + QStringLiteral("/ap-default.png")));
+        page.resize(page.minimumSize());
+        QApplication::processEvents();
+        QVERIFY(page.grab().save(output + QStringLiteral("/ap-minimum.png")));
+        page.findChild<QComboBox*>(QStringLiteral("playMode"))->setCurrentIndex(1);
+        page.resize(820, 620);
+        QApplication::processEvents();
+        QVERIFY(page.grab().save(output + QStringLiteral("/standalone-default.png")));
+        page.resize(page.minimumSize());
+        QApplication::processEvents();
+        QVERIFY(page.grab().save(output + QStringLiteral("/standalone-minimum.png")));
+    }
+
   private:
     QString m_previousCwd;
     QString m_capturedPrepare;
+    QString m_opLog;
     std::unique_ptr<QTemporaryDir> m_scratch;
     QString m_gameRoot;
     std::unique_ptr<FakeEmulatorService> m_emulator;

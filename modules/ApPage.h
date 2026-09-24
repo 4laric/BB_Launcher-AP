@@ -43,6 +43,7 @@ class ApPage : public QDialog {
   private slots:
     void BrowseSeed();
     void SeedChanged();
+    void RandomizeClicked();
     void PlayClicked();
     void CancelClicked();
     void SwitchSeedClicked();
@@ -57,11 +58,22 @@ class ApPage : public QDialog {
     bool EnsureConfigured(QString* error);
     void RefreshForSession();
     void RefreshEnemizerControls();
+    void RefreshMode();
+    void InvalidatePrepared();
+    void LoadSettings();
+    void SaveSettings() const;
+    bool BuildRequest(ApPlayRequest* request, QString* error) const;
     void closeEvent(QCloseEvent* event) override;
 
     ApCoordinator* m_coordinator;
     QLabel* m_setupLabel = nullptr;
+    QComboBox* m_modeCombo = nullptr;
+    QLabel* m_seedLabel = nullptr;
+    QWidget* m_apSeedRow = nullptr;
     QLineEdit* m_seedEdit = nullptr;
+    QLineEdit* m_standaloneSeedEdit = nullptr;
+    QLabel* m_standaloneSeedLabel = nullptr;
+    QCheckBox* m_includeDlc = nullptr;
     QLabel* m_playerLabel = nullptr;
     QComboBox* m_playerCombo = nullptr;
     QLabel* m_serverLabel = nullptr;
@@ -69,8 +81,9 @@ class ApPage : public QDialog {
     QLabel* m_passwordLabel = nullptr;
     QLineEdit* m_passwordEdit = nullptr;
     QGroupBox* m_enemizerGroup = nullptr;
-    QCheckBox* m_randomizeEnemies = nullptr;
+    QComboBox* m_enemyMode = nullptr;
     QLineEdit* m_enemySeedEdit = nullptr;
+    QWidget* m_enemySeedRow = nullptr;
     QGroupBox* m_expandedCoverage = nullptr;
     QCheckBox* m_releaseContracts = nullptr;
     QCheckBox* m_releaseSpawns = nullptr;
@@ -80,7 +93,9 @@ class ApPage : public QDialog {
     QCheckBox* m_allowTierMixing = nullptr;
     QCheckBox* m_preserveLocomotion = nullptr;
     QCheckBox* m_normalizeScaling = nullptr;
+    QCheckBox* m_shuffleBosses = nullptr;
     QPushButton* m_playButton = nullptr;
+    QPushButton* m_randomizeButton = nullptr;
     QPushButton* m_cancelButton = nullptr;
     QPushButton* m_switchSeedButton = nullptr;
     QPushButton* m_regularButton = nullptr;
@@ -90,5 +105,14 @@ class ApPage : public QDialog {
     bool m_cancelled = false;
     bool m_inspecting = false;
     bool m_busy = false;
+    bool m_hasPrepared = false;
+    bool m_settingsLoaded = false;
+    int m_lastModeIndex = 0;
+    int m_apEnemyMode = 0;
+    int m_standaloneEnemyMode = 0;
+    QString m_savedPlayerName;
+    QString m_savedServer;
+    QString m_savedApSeedPath;
+    ApCoordinator::Prepared m_prepared;
     QList<QWidget*> m_operationControls;
 };
