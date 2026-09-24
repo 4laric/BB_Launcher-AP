@@ -35,7 +35,7 @@ struct ApPlayRequest {
     struct Enemizer {
         bool enabled = false;
         QString seed;
-        bool allowTierMixing = false;
+        bool allowTierMixing = true;
         bool preserveLocomotion = false;
         bool normalizeScaling = false;
         bool bossCanary = false;

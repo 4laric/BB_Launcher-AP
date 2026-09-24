@@ -90,7 +90,6 @@ class ApPage : public QDialog {
     QCheckBox* m_releaseChara = nullptr;
     QToolButton* m_advancedEnemyOptions = nullptr;
     QWidget* m_advancedEnemyPanel = nullptr;
-    QCheckBox* m_allowTierMixing = nullptr;
     QCheckBox* m_preserveLocomotion = nullptr;
     QCheckBox* m_normalizeScaling = nullptr;
     QCheckBox* m_shuffleBosses = nullptr;

@@ -183,10 +183,6 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
     m_enemySeedEdit->setPlaceholderText(tr("Optional; blank uses the AP seed"));
     enemySeedRow->addWidget(m_enemySeedEdit, 1);
     enemyLayout->insertWidget(1, m_enemySeedRow);
-    m_allowTierMixing = new QCheckBox(tr("Allow replacements from any difficulty tier"),
-                                       m_advancedEnemyPanel);
-    m_allowTierMixing->setObjectName(QStringLiteral("apEnemyTierMixing"));
-    m_allowTierMixing->setChecked(false);
     m_preserveLocomotion = new QCheckBox(tr("Preserve movement style"), m_advancedEnemyPanel);
     m_preserveLocomotion->setObjectName(QStringLiteral("apEnemyPreserveLocomotion"));
     m_preserveLocomotion->setChecked(false);
@@ -197,7 +193,6 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
                                     m_advancedEnemyPanel);
     m_shuffleBosses->setObjectName(QStringLiteral("apShuffleBosses"));
     m_shuffleBosses->setChecked(true);
-    advancedLayout->addWidget(m_allowTierMixing);
     advancedLayout->addWidget(m_preserveLocomotion);
     advancedLayout->addWidget(m_normalizeScaling);
     advancedLayout->addWidget(m_shuffleBosses);
@@ -210,6 +205,7 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
     connect(m_advancedEnemyOptions, &QToolButton::toggled, this, [this](bool expanded) {
         m_advancedEnemyOptions->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
         m_advancedEnemyPanel->setVisible(expanded);
+        RefreshEnemizerControls();
     });
     m_operationControls << m_enemizerGroup;
     layout->addWidget(m_enemizerGroup);
@@ -298,7 +294,7 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
             [this](const QString&) { InvalidatePrepared(); });
     connect(m_enemySeedEdit, &QLineEdit::textChanged, this,
             [this](const QString&) { InvalidatePrepared(); });
-    for (QCheckBox* option : {m_allowTierMixing, m_preserveLocomotion, m_normalizeScaling,
+    for (QCheckBox* option : {m_preserveLocomotion, m_normalizeScaling,
                               m_shuffleBosses}) {
         connect(option, &QCheckBox::toggled, this,
                 [this](bool) { InvalidatePrepared(); });
@@ -409,7 +405,6 @@ void ApPage::LoadSettings() {
         m_serverEdit->setText(m_savedServer);
         m_enemySeedEdit->setText(saved.value(QStringLiteral("enemy_seed")).toString());
         m_shuffleBosses->setChecked(saved.value(QStringLiteral("shuffle_bosses")).toBool(true));
-        m_allowTierMixing->setChecked(saved.value(QStringLiteral("allow_tier_mixing")).toBool(false));
         m_preserveLocomotion->setChecked(saved.value(QStringLiteral("preserve_locomotion")).toBool(false));
         m_normalizeScaling->setChecked(saved.value(QStringLiteral("normalize_scaling")).toBool(false));
     }
@@ -438,7 +433,6 @@ void ApPage::SaveSettings() const {
         {QStringLiteral("ap_server"), m_serverEdit->text().trimmed()},
         {QStringLiteral("enemy_seed"), m_enemySeedEdit->text().trimmed()},
         {QStringLiteral("shuffle_bosses"), m_shuffleBosses->isChecked()},
-        {QStringLiteral("allow_tier_mixing"), m_allowTierMixing->isChecked()},
         {QStringLiteral("preserve_locomotion"), m_preserveLocomotion->isChecked()},
         {QStringLiteral("normalize_scaling"), m_normalizeScaling->isChecked()},
     };
@@ -569,7 +563,7 @@ bool ApPage::BuildRequest(ApPlayRequest* request, QString* error) const {
     request->enemizer.enabled = m_enemyMode->currentIndex() != 2;
     if (request->enemizer.enabled) {
         request->enemizer.seed = m_enemySeedEdit->text().trimmed();
-        request->enemizer.allowTierMixing = m_allowTierMixing->isChecked();
+        request->enemizer.allowTierMixing = true;
         request->enemizer.preserveLocomotion = m_preserveLocomotion->isChecked();
         request->enemizer.normalizeScaling = m_normalizeScaling->isChecked();
         request->enemizer.bossPool = m_shuffleBosses->isChecked()
