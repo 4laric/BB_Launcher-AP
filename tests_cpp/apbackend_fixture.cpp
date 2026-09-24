@@ -40,7 +40,8 @@ int main(int argc, char** argv) {
                       {"operations", QJsonArray{"capabilities", "inspect_seed", "prepare_play",
                                                    "verify_and_arm", "connect_and_start_client",
                                                    "session_status", "stop_client", "cancel_operation",
-                                                   "prepare_standalone", "verify_standalone"}}};
+                                                   "prepare_standalone", "verify_standalone",
+                                                   "migrate_legacy_overlay"}}};
         } else if (op == QStringLiteral("inspect_seed")) {
             const QString player = params.value("player_name").toString();
             result = {{"seed", "Fixture seed"},
@@ -49,6 +50,13 @@ int main(int argc, char** argv) {
                       {"selected", player},
                       {"needs_choice", player.isEmpty()}};
         } else if (op == QStringLiteral("prepare_play")) {
+            const QString attemptsPath = qEnvironmentVariable("BB_AP_TEST_CAPTURE_PREPARES");
+            if (!attemptsPath.isEmpty()) {
+                QFile attempts(attemptsPath);
+                if (attempts.open(QIODevice::WriteOnly | QIODevice::Append)) {
+                    attempts.write(QJsonDocument(request).toJson(QJsonDocument::Compact) + '\n');
+                }
+            }
             const QString capturePath = qEnvironmentVariable("BB_AP_TEST_CAPTURE_REQUEST");
             if (!capturePath.isEmpty()) {
                 QFile capture(capturePath);
@@ -57,7 +65,14 @@ int main(int argc, char** argv) {
                 }
             }
             const QJsonObject enemizer = params.value("enemizer").toObject();
-            result = {{"play_id", "fixture-play"},
+            const QString collidedSeed = qEnvironmentVariable("BB_AP_TEST_COLLIDE_ENEMY_SEED");
+            if (!collidedSeed.isEmpty() &&
+                enemizer.value("seed").toString() == collidedSeed) {
+                succeeded = false;
+                error = {{"code", "package-exists"},
+                         {"detail", "A prepared mod for this seed already exists."}};
+            } else {
+                result = {{"play_id", "fixture-play"},
                       {"package_name", "Archipelago-Fixture"},
                       {"reused", false},
                       {"enemizer", QJsonObject{{"enabled", enemizer.value("enabled")},
@@ -69,8 +84,27 @@ int main(int argc, char** argv) {
                                                {"slot", params.value("player_name")},
                                                {"server", params.value("server")},
                                                {"title", "Fixture seed — " + params.value("player_name").toString()}}}};
+            }
         } else if (op == QStringLiteral("verify_and_arm")) {
             result = {{"arm_id", "fixture-arm"}};
+        } else if (op == QStringLiteral("migrate_legacy_overlay")) {
+            if (qEnvironmentVariableIsSet("BB_AP_TEST_MIGRATION_FAIL")) {
+                succeeded = false;
+                error = {{"code", "legacy-owner-conflict"},
+                         {"detail", "A previous Archipelago setup could not be safely restored."}};
+            } else {
+                const QString activePath = qEnvironmentVariable("BB_AP_TEST_REQUIRE_DEACTIVATED");
+                if (!activePath.isEmpty() && QDir(activePath).exists()) {
+                    succeeded = false;
+                    error = {{"code", "legacy-owner-conflict"},
+                             {"detail", "Current managed package was not deactivated first."}};
+                } else {
+                    const QString marker = qEnvironmentVariable("BB_AP_TEST_LEGACY_MARKER");
+                    const bool present = !marker.isEmpty() && QFile::exists(marker);
+                    if (present) QFile::remove(marker); // Simulated backend migration.
+                    result = {{"status", present ? "migrated" : "no_legacy"}};
+                }
+            }
         } else if (op == QStringLiteral("prepare_standalone")) {
             const QString packageName = QStringLiteral("Bloodborne-Standalone-Fixture");
             const QString packagePath = QDir(params.value("mods_root").toString())
@@ -81,8 +115,10 @@ int main(int argc, char** argv) {
             const QString receiptPath = packagePath + QStringLiteral("/receipt.json");
             QFile receipt(receiptPath);
             if (receipt.open(QIODevice::WriteOnly)) {
-                receipt.write(params.value("expanded_coverage").toBool()
-                    ? "fixture-receipt-expanded" : "fixture-receipt-reviewed");
+                const QByteArray value = QByteArray(params.value("expanded_coverage").toBool()
+                    ? "fixture-receipt-expanded" : "fixture-receipt-reviewed")
+                    + (params.value("normalize_scaling").toBool() ? "-scaled" : "-unscaled");
+                receipt.write(value);
             }
             const QString capturePath = qEnvironmentVariable("BB_AP_TEST_CAPTURE_REQUEST");
             if (!capturePath.isEmpty()) {
@@ -103,9 +139,10 @@ int main(int argc, char** argv) {
                 }
             }
             QFile receipt(params.value("receipt_path").toString());
-            const QByteArray expected = params.value("expanded_coverage").toBool()
+            const QByteArray expected = QByteArray(params.value("expanded_coverage").toBool()
                 ? QByteArray("fixture-receipt-expanded")
-                : QByteArray("fixture-receipt-reviewed");
+                : QByteArray("fixture-receipt-reviewed"))
+                + (params.value("normalize_scaling").toBool() ? "-scaled" : "-unscaled");
             if (!receipt.open(QIODevice::ReadOnly) ||
                 receipt.readAll() != expected) {
                 succeeded = false;

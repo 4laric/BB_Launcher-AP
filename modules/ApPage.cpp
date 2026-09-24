@@ -15,6 +15,7 @@
 #include <QPalette>
 #include <QSaveFile>
 #include <QSignalBlocker>
+#include <QUuid>
 #include <QVBoxLayout>
 
 #include "ApFork.h"
@@ -44,6 +45,23 @@ QMessageBox::StandardButton AskDark(QWidget* parent, const QString& title,
     box.setDefaultButton(QMessageBox::No);
     StyleDialog(&box);
     return static_cast<QMessageBox::StandardButton>(box.exec());
+}
+
+bool AskRerandomize(QWidget* parent) {
+    QMessageBox box(QMessageBox::Question,
+                    QCoreApplication::translate("ApPage", "Prepared mod already exists"),
+                    QCoreApplication::translate(
+                        "ApPage", "A prepared mod already exists for this Archipelago seed and enemy layout.\n\nCreate a fresh enemy and boss layout for the same world and player? The existing mod will remain untouched."),
+                    QMessageBox::NoButton, parent);
+    auto* rerandomize = box.addButton(
+        QCoreApplication::translate("ApPage", "Rerandomize enemies"),
+        QMessageBox::AcceptRole);
+    rerandomize->setObjectName(QStringLiteral("rerandomizeEnemiesButton"));
+    auto* cancel = box.addButton(QMessageBox::Cancel);
+    box.setDefaultButton(cancel);
+    StyleDialog(&box);
+    box.exec();
+    return box.clickedButton() == rerandomize;
 }
 } // namespace
 
@@ -133,47 +151,11 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
     m_enemyMode->addItem(tr("Expanded coverage (experimental)"));
     m_enemyMode->addItem(tr("Vanilla enemies"));
     enemyLayout->addWidget(m_enemyMode);
+    m_standaloneBossNote = new QLabel(tr("Standalone mode keeps bosses unchanged."),
+                                      m_enemizerGroup);
+    m_standaloneBossNote->setObjectName(QStringLiteral("standaloneBossNote"));
+    enemyLayout->addWidget(m_standaloneBossNote);
 
-    m_expandedCoverage = new QGroupBox(tr("Expanded coverage (experimental)"), m_enemizerGroup);
-    m_expandedCoverage->setObjectName(QStringLiteral("apExpandedEnemyCoverage"));
-    m_expandedCoverage->setCheckable(true);
-    m_expandedCoverage->setChecked(true);
-    auto* coverageLayout = new QVBoxLayout(m_expandedCoverage);
-    auto* coverageNote = new QLabel(
-        tr("Includes additional scripted enemies. Gameplay has not been tested for every encounter."),
-        m_expandedCoverage);
-    coverageNote->setWordWrap(true);
-    coverageNote->setToolTip(coverageNote->text());
-    coverageLayout->addWidget(coverageNote);
-    m_releaseContracts = new QCheckBox(tr("Scripted enemies with supported behavior"),
-                                        m_expandedCoverage);
-    m_releaseContracts->setObjectName(QStringLiteral("apEnemyScriptedBehavior"));
-    m_releaseContracts->setChecked(true);
-    m_releaseSpawns = new QCheckBox(tr("Enemies created by ambushes"), m_expandedCoverage);
-    m_releaseSpawns->setObjectName(QStringLiteral("apEnemyAmbushes"));
-    m_releaseSpawns->setChecked(true);
-    m_releaseChara = new QCheckBox(tr("Hunter-type enemies with scripted equipment"),
-                                    m_expandedCoverage);
-    m_releaseChara->setObjectName(QStringLiteral("apEnemyHunters"));
-    m_releaseChara->setChecked(true);
-    coverageLayout->addWidget(m_releaseContracts);
-    coverageLayout->addWidget(m_releaseSpawns);
-    coverageLayout->addWidget(m_releaseChara);
-    m_expandedCoverage->hide();
-
-    m_advancedEnemyOptions = new QToolButton(m_enemizerGroup);
-    m_advancedEnemyOptions->setObjectName(QStringLiteral("apAdvancedEnemyOptions"));
-    m_advancedEnemyOptions->setText(tr("Advanced enemy options"));
-    m_advancedEnemyOptions->setCheckable(true);
-    m_advancedEnemyOptions->setChecked(false);
-    m_advancedEnemyOptions->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    m_advancedEnemyOptions->setArrowType(Qt::RightArrow);
-    enemyLayout->addWidget(m_advancedEnemyOptions, 0, Qt::AlignLeft);
-
-    m_advancedEnemyPanel = new QWidget(m_enemizerGroup);
-    m_advancedEnemyPanel->setObjectName(QStringLiteral("apAdvancedEnemyPanel"));
-    auto* advancedLayout = new QVBoxLayout(m_advancedEnemyPanel);
-    advancedLayout->setContentsMargins(12, 0, 0, 0);
     m_enemySeedRow = new QWidget(m_enemizerGroup);
     auto* enemySeedRow = new QHBoxLayout(m_enemySeedRow);
     enemySeedRow->setContentsMargins(0, 0, 0, 0);
@@ -183,30 +165,12 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
     m_enemySeedEdit->setPlaceholderText(tr("Optional; blank uses the AP seed"));
     enemySeedRow->addWidget(m_enemySeedEdit, 1);
     enemyLayout->insertWidget(1, m_enemySeedRow);
-    m_preserveLocomotion = new QCheckBox(tr("Preserve movement style"), m_advancedEnemyPanel);
-    m_preserveLocomotion->setObjectName(QStringLiteral("apEnemyPreserveLocomotion"));
-    m_preserveLocomotion->setChecked(false);
-    m_normalizeScaling = new QCheckBox(tr("Adjust enemy stats for their new role"),
-                                        m_advancedEnemyPanel);
+    m_normalizeScaling = new QCheckBox(tr("Scaling"), m_enemizerGroup);
     m_normalizeScaling->setObjectName(QStringLiteral("apEnemyNormalizeStats"));
-    m_shuffleBosses = new QCheckBox(tr("Shuffle bosses (reviewed encounters)"),
-                                    m_advancedEnemyPanel);
-    m_shuffleBosses->setObjectName(QStringLiteral("apShuffleBosses"));
-    m_shuffleBosses->setChecked(true);
-    advancedLayout->addWidget(m_preserveLocomotion);
-    advancedLayout->addWidget(m_normalizeScaling);
-    advancedLayout->addWidget(m_shuffleBosses);
-    m_advancedEnemyPanel->setVisible(false);
-    enemyLayout->addWidget(m_advancedEnemyPanel);
+    m_normalizeScaling->setChecked(true);
+    enemyLayout->addWidget(m_normalizeScaling);
     connect(m_enemyMode, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             [this](int) { RefreshMode(); InvalidatePrepared(); });
-    connect(m_expandedCoverage, &QGroupBox::toggled, this,
-            [this](bool) { RefreshEnemizerControls(); });
-    connect(m_advancedEnemyOptions, &QToolButton::toggled, this, [this](bool expanded) {
-        m_advancedEnemyOptions->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
-        m_advancedEnemyPanel->setVisible(expanded);
-        RefreshEnemizerControls();
-    });
     m_operationControls << m_enemizerGroup;
     layout->addWidget(m_enemizerGroup);
 
@@ -294,11 +258,8 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
             [this](const QString&) { InvalidatePrepared(); });
     connect(m_enemySeedEdit, &QLineEdit::textChanged, this,
             [this](const QString&) { InvalidatePrepared(); });
-    for (QCheckBox* option : {m_preserveLocomotion, m_normalizeScaling,
-                              m_shuffleBosses}) {
-        connect(option, &QCheckBox::toggled, this,
-                [this](bool) { InvalidatePrepared(); });
-    }
+    connect(m_normalizeScaling, &QCheckBox::toggled, this,
+            [this](bool) { InvalidatePrepared(); });
     m_pollTimer = new QTimer(this);
     m_pollTimer->setInterval(5000);
     connect(m_pollTimer, &QTimer::timeout, this, &ApPage::PollStatus);
@@ -339,10 +300,8 @@ void ApPage::RefreshEnemizerControls() {
     }
     const bool sessionLocked = m_coordinator != nullptr && m_coordinator->GameStarted();
     m_enemizerGroup->setEnabled(!m_busy && !sessionLocked);
-    const bool optionsEnabled = !m_busy && !sessionLocked && m_enemyMode->currentIndex() != 2 &&
-                                m_modeCombo->currentIndex() == 0;
-    m_advancedEnemyOptions->setEnabled(optionsEnabled);
-    m_advancedEnemyPanel->setEnabled(optionsEnabled && m_advancedEnemyOptions->isChecked());
+    const bool optionsEnabled = !m_busy && !sessionLocked && m_enemyMode->currentIndex() != 2;
+    m_normalizeScaling->setEnabled(optionsEnabled);
 }
 
 void ApPage::InvalidatePrepared() {
@@ -355,16 +314,24 @@ void ApPage::InvalidatePrepared() {
 void ApPage::RefreshMode() {
     const bool standalone = m_modeCombo->currentIndex() == 1;
     if (m_lastModeIndex != m_modeCombo->currentIndex()) {
-        if (m_lastModeIndex == 0) m_apEnemyMode = m_enemyMode->currentIndex();
-        else m_standaloneEnemyMode = m_enemyMode->currentIndex();
+        if (m_lastModeIndex == 0) {
+            m_apEnemyMode = m_enemyMode->currentIndex();
+            m_apScaling = m_normalizeScaling->isChecked();
+        } else {
+            m_standaloneEnemyMode = m_enemyMode->currentIndex();
+            m_standaloneScaling = m_normalizeScaling->isChecked();
+        }
         m_lastModeIndex = m_modeCombo->currentIndex();
+        const QSignalBlocker blockScaling(m_normalizeScaling);
         m_enemyMode->setCurrentIndex(standalone ? m_standaloneEnemyMode : m_apEnemyMode);
+        m_normalizeScaling->setChecked(standalone ? m_standaloneScaling : m_apScaling);
     }
     m_seedLabel->setVisible(!standalone);
     m_apSeedRow->setVisible(!standalone);
     m_standaloneSeedEdit->setVisible(standalone);
     m_standaloneSeedLabel->setVisible(standalone);
     m_includeDlc->setVisible(standalone);
+    m_standaloneBossNote->setVisible(standalone && m_enemyMode->currentIndex() != 2);
     m_playerLabel->setVisible(!standalone && m_playerCombo->count() > 1);
     m_playerCombo->setVisible(!standalone && m_playerCombo->count() > 1);
     m_serverLabel->setVisible(!standalone && m_serverEdit->text().isEmpty() &&
@@ -372,10 +339,6 @@ void ApPage::RefreshMode() {
     m_serverEdit->setVisible(m_serverLabel->isVisible());
     m_passwordLabel->setVisible(!standalone);
     m_passwordEdit->setVisible(!standalone);
-    // Standalone expanded coverage uses the reviewed release tranches;
-    // AP-only boss and tuning controls remain outside standalone mode.
-    m_advancedEnemyOptions->setVisible(!standalone);
-    m_advancedEnemyPanel->setVisible(!standalone && m_advancedEnemyOptions->isChecked());
     m_enemySeedRow->setVisible(!standalone && m_enemyMode->currentIndex() != 2);
     RefreshEnemizerControls();
 }
@@ -390,12 +353,16 @@ void ApPage::LoadSettings() {
         const QSignalBlocker blockStandaloneSeed(m_standaloneSeedEdit);
         const QSignalBlocker blockEnemy(m_enemyMode);
         const QSignalBlocker blockDlc(m_includeDlc);
+        const QSignalBlocker blockScaling(m_normalizeScaling);
         m_apEnemyMode = qBound(0, saved.value(QStringLiteral("ap_enemy_mode")).toInt(), 2);
         m_standaloneEnemyMode = qBound(0,
             saved.value(QStringLiteral("standalone_enemy_mode")).toInt(), 2);
+        m_apScaling = saved.value(QStringLiteral("ap_normalize_scaling")).toBool(true);
+        m_standaloneScaling = saved.value(QStringLiteral("standalone_normalize_scaling")).toBool(true);
         m_lastModeIndex = saved.value(QStringLiteral("mode")).toInt() == 1 ? 1 : 0;
         m_modeCombo->setCurrentIndex(m_lastModeIndex);
         m_enemyMode->setCurrentIndex(m_lastModeIndex == 1 ? m_standaloneEnemyMode : m_apEnemyMode);
+        m_normalizeScaling->setChecked(m_lastModeIndex == 1 ? m_standaloneScaling : m_apScaling);
         m_savedApSeedPath = saved.value(QStringLiteral("ap_seed_path")).toString();
         m_seedEdit->setText(m_savedApSeedPath);
         m_standaloneSeedEdit->setText(saved.value(QStringLiteral("standalone_seed")).toString());
@@ -404,9 +371,6 @@ void ApPage::LoadSettings() {
         m_savedServer = saved.value(QStringLiteral("ap_server")).toString();
         m_serverEdit->setText(m_savedServer);
         m_enemySeedEdit->setText(saved.value(QStringLiteral("enemy_seed")).toString());
-        m_shuffleBosses->setChecked(saved.value(QStringLiteral("shuffle_bosses")).toBool(true));
-        m_preserveLocomotion->setChecked(saved.value(QStringLiteral("preserve_locomotion")).toBool(false));
-        m_normalizeScaling->setChecked(saved.value(QStringLiteral("normalize_scaling")).toBool(false));
     }
     m_settingsLoaded = true;
 }
@@ -421,6 +385,10 @@ void ApPage::SaveSettings() const {
         ? m_enemyMode->currentIndex() : m_apEnemyMode;
     const int standaloneEnemy = m_modeCombo->currentIndex() == 1
         ? m_enemyMode->currentIndex() : m_standaloneEnemyMode;
+    const bool apScaling = m_modeCombo->currentIndex() == 0
+        ? m_normalizeScaling->isChecked() : m_apScaling;
+    const bool standaloneScaling = m_modeCombo->currentIndex() == 1
+        ? m_normalizeScaling->isChecked() : m_standaloneScaling;
     const QJsonObject saved{
         {QStringLiteral("mode"), m_modeCombo->currentIndex()},
         {QStringLiteral("ap_seed_path"), m_seedEdit->text().trimmed()},
@@ -428,13 +396,12 @@ void ApPage::SaveSettings() const {
         {QStringLiteral("include_dlc"), m_includeDlc->isChecked()},
         {QStringLiteral("ap_enemy_mode"), apEnemy},
         {QStringLiteral("standalone_enemy_mode"), standaloneEnemy},
+        {QStringLiteral("ap_normalize_scaling"), apScaling},
+        {QStringLiteral("standalone_normalize_scaling"), standaloneScaling},
         {QStringLiteral("ap_player"), m_playerCombo->currentText().isEmpty()
                                           ? m_savedPlayerName : m_playerCombo->currentText()},
         {QStringLiteral("ap_server"), m_serverEdit->text().trimmed()},
         {QStringLiteral("enemy_seed"), m_enemySeedEdit->text().trimmed()},
-        {QStringLiteral("shuffle_bosses"), m_shuffleBosses->isChecked()},
-        {QStringLiteral("preserve_locomotion"), m_preserveLocomotion->isChecked()},
-        {QStringLiteral("normalize_scaling"), m_normalizeScaling->isChecked()},
     };
     file.write(QJsonDocument(saved).toJson(QJsonDocument::Indented));
     file.commit();
@@ -564,10 +531,9 @@ bool ApPage::BuildRequest(ApPlayRequest* request, QString* error) const {
     if (request->enemizer.enabled) {
         request->enemizer.seed = m_enemySeedEdit->text().trimmed();
         request->enemizer.allowTierMixing = true;
-        request->enemizer.preserveLocomotion = m_preserveLocomotion->isChecked();
+        request->enemizer.preserveLocomotion = false;
         request->enemizer.normalizeScaling = m_normalizeScaling->isChecked();
-        request->enemizer.bossPool = m_shuffleBosses->isChecked()
-            ? QStringLiteral("reviewed") : QString();
+        request->enemizer.bossPool = QStringLiteral("reviewed");
         const bool expanded = m_enemyMode->currentIndex() == 1;
         request->enemizer.releaseContracts = expanded;
         request->enemizer.releaseSpawns = expanded;
@@ -577,9 +543,14 @@ bool ApPage::BuildRequest(ApPlayRequest* request, QString* error) const {
 }
 
 void ApPage::RandomizeClicked() {
-    if (m_busy || m_coordinator->GameStarted()) return;
+    PrepareCurrent(nullptr);
+}
+
+bool ApPage::PrepareCurrent(bool* recoveredCollision) {
+    if (recoveredCollision != nullptr) *recoveredCollision = false;
+    if (m_busy || m_coordinator->GameStarted()) return false;
     QString failure;
-    if (!EnsureConfigured(&failure)) { ShowError(failure); return; }
+    if (!EnsureConfigured(&failure)) { ShowError(failure); return false; }
     m_cancelled = false;
     m_pollTimer->stop();
     ApPlayRequest apRequest;
@@ -589,31 +560,50 @@ void ApPage::RandomizeClicked() {
         standaloneRequest.seed = m_standaloneSeedEdit->text().trimmed();
         if (standaloneRequest.seed.isEmpty()) {
             ShowError(tr("Enter a randomizer seed first."));
-            return;
+            return false;
         }
         Common::PathToQString(standaloneRequest.gameRoot, Common::installPath);
         standaloneRequest.includeDlc = m_includeDlc->isChecked();
         standaloneRequest.randomizeEnemies = m_enemyMode->currentIndex() != 2;
         standaloneRequest.expandedCoverage = m_enemyMode->currentIndex() == 1;
+        standaloneRequest.normalizeScaling = m_normalizeScaling->isChecked();
     } else if (!BuildRequest(&apRequest, &failure)) {
         ShowError(failure);
-        return;
+        return false;
     }
     InvalidatePrepared();
     SetBusy(true, tr("Randomizing your game"));
-    const bool prepared = standalone
+    bool prepared = standalone
         ? m_coordinator->PrepareStandalone(standaloneRequest, &m_prepared, &failure)
         : m_coordinator->Prepare(apRequest, &m_prepared, &failure);
     SetBusy(false);
+    if (!prepared && !m_cancelled && !standalone && apRequest.enemizer.enabled &&
+        m_coordinator->lastErrorCode() == QStringLiteral("package-exists")) {
+        if (!AskRerandomize(this)) {
+            SetStatus(tr("Existing prepared mod left unchanged. Change the enemy seed to try again."), false);
+            return false;
+        }
+        // Only the enemy seed changes. The AP world, player, and every other
+        // option stay fixed; the existing immutable package is never replaced.
+        const QString freshSeed = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        m_enemySeedEdit->setText(freshSeed);
+        apRequest.enemizer.seed = freshSeed;
+        SaveSettings();
+        SetBusy(true, tr("Rerandomizing enemies and bosses"));
+        prepared = m_coordinator->Prepare(apRequest, &m_prepared, &failure);
+        SetBusy(false);
+        if (recoveredCollision != nullptr) *recoveredCollision = true;
+    }
     if (!prepared || m_cancelled) {
         if (m_cancelled) SetStatus(tr("Cancelled. No game was started."), false);
         else ShowError(failure);
-        return;
+        return false;
     }
     m_hasPrepared = true;
     SetStatus(tr("Randomization ready. Press Launch when you are ready to play."), false);
     SaveSettings();
     RefreshForSession();
+    return true;
 }
 
 void ApPage::PlayClicked() {
@@ -624,8 +614,8 @@ void ApPage::PlayClicked() {
         return;
     }
     if (!m_hasPrepared) {
-        RandomizeClicked();
-        if (!m_hasPrepared) return;
+        bool recoveredCollision = false;
+        if (!PrepareCurrent(&recoveredCollision) || recoveredCollision) return;
     }
     if (!EnsureConfigured(&failure)) { ShowError(failure); return; }
     m_cancelled = false;
