@@ -165,6 +165,19 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
     m_enemySeedEdit->setPlaceholderText(tr("Optional; blank uses the AP seed"));
     enemySeedRow->addWidget(m_enemySeedEdit, 1);
     enemyLayout->insertWidget(1, m_enemySeedRow);
+    m_bossPoolRow = new QWidget(m_enemizerGroup);
+    auto* bossPoolLayout = new QHBoxLayout(m_bossPoolRow);
+    bossPoolLayout->setContentsMargins(0, 0, 0, 0);
+    auto* bossPoolLabel = new QLabel(tr("Boss pool:"), m_bossPoolRow);
+    m_bossPool = new QComboBox(m_bossPoolRow);
+    m_bossPool->setObjectName(QStringLiteral("apBossPool"));
+    m_bossPool->addItem(tr("Reviewed"), QStringLiteral("reviewed"));
+    m_bossPool->addItem(tr("Only the good bosses (experimental)"),
+                        QStringLiteral("good"));
+    bossPoolLabel->setBuddy(m_bossPool);
+    bossPoolLayout->addWidget(bossPoolLabel);
+    bossPoolLayout->addWidget(m_bossPool, 1);
+    enemyLayout->insertWidget(2, m_bossPoolRow);
     m_normalizeScaling = new QCheckBox(tr("Scaling"), m_enemizerGroup);
     m_normalizeScaling->setObjectName(QStringLiteral("apEnemyNormalizeStats"));
     m_normalizeScaling->setChecked(true);
@@ -258,6 +271,8 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
             [this](const QString&) { InvalidatePrepared(); });
     connect(m_enemySeedEdit, &QLineEdit::textChanged, this,
             [this](const QString&) { InvalidatePrepared(); });
+    connect(m_bossPool, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int) { InvalidatePrepared(); });
     connect(m_normalizeScaling, &QCheckBox::toggled, this,
             [this](bool) { InvalidatePrepared(); });
     m_pollTimer = new QTimer(this);
@@ -302,6 +317,7 @@ void ApPage::RefreshEnemizerControls() {
     m_enemizerGroup->setEnabled(!m_busy && !sessionLocked);
     const bool optionsEnabled = !m_busy && !sessionLocked && m_enemyMode->currentIndex() != 2;
     m_normalizeScaling->setEnabled(optionsEnabled);
+    m_bossPool->setEnabled(optionsEnabled && m_modeCombo->currentIndex() == 0);
 }
 
 void ApPage::InvalidatePrepared() {
@@ -340,6 +356,7 @@ void ApPage::RefreshMode() {
     m_passwordLabel->setVisible(!standalone);
     m_passwordEdit->setVisible(!standalone);
     m_enemySeedRow->setVisible(!standalone && m_enemyMode->currentIndex() != 2);
+    m_bossPoolRow->setVisible(!standalone && m_enemyMode->currentIndex() != 2);
     RefreshEnemizerControls();
 }
 
@@ -352,6 +369,7 @@ void ApPage::LoadSettings() {
         const QSignalBlocker blockApSeed(m_seedEdit);
         const QSignalBlocker blockStandaloneSeed(m_standaloneSeedEdit);
         const QSignalBlocker blockEnemy(m_enemyMode);
+        const QSignalBlocker blockBossPool(m_bossPool);
         const QSignalBlocker blockDlc(m_includeDlc);
         const QSignalBlocker blockScaling(m_normalizeScaling);
         m_apEnemyMode = qBound(0, saved.value(QStringLiteral("ap_enemy_mode")).toInt(), 2);
@@ -362,6 +380,9 @@ void ApPage::LoadSettings() {
         m_lastModeIndex = saved.value(QStringLiteral("mode")).toInt() == 1 ? 1 : 0;
         m_modeCombo->setCurrentIndex(m_lastModeIndex);
         m_enemyMode->setCurrentIndex(m_lastModeIndex == 1 ? m_standaloneEnemyMode : m_apEnemyMode);
+        const int bossPoolIndex = m_bossPool->findData(
+            saved.value(QStringLiteral("ap_boss_pool")).toString());
+        m_bossPool->setCurrentIndex(bossPoolIndex < 0 ? 0 : bossPoolIndex);
         m_normalizeScaling->setChecked(m_lastModeIndex == 1 ? m_standaloneScaling : m_apScaling);
         m_savedApSeedPath = saved.value(QStringLiteral("ap_seed_path")).toString();
         m_seedEdit->setText(m_savedApSeedPath);
@@ -395,6 +416,7 @@ void ApPage::SaveSettings() const {
         {QStringLiteral("standalone_seed"), m_standaloneSeedEdit->text().trimmed()},
         {QStringLiteral("include_dlc"), m_includeDlc->isChecked()},
         {QStringLiteral("ap_enemy_mode"), apEnemy},
+        {QStringLiteral("ap_boss_pool"), m_bossPool->currentData().toString()},
         {QStringLiteral("standalone_enemy_mode"), standaloneEnemy},
         {QStringLiteral("ap_normalize_scaling"), apScaling},
         {QStringLiteral("standalone_normalize_scaling"), standaloneScaling},
@@ -533,7 +555,7 @@ bool ApPage::BuildRequest(ApPlayRequest* request, QString* error) const {
         request->enemizer.allowTierMixing = true;
         request->enemizer.preserveLocomotion = false;
         request->enemizer.normalizeScaling = m_normalizeScaling->isChecked();
-        request->enemizer.bossPool = QStringLiteral("reviewed");
+        request->enemizer.bossPool = m_bossPool->currentData().toString();
         const bool expanded = m_enemyMode->currentIndex() == 1;
         request->enemizer.releaseContracts = expanded;
         request->enemizer.releaseSpawns = expanded;

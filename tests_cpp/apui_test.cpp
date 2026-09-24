@@ -162,21 +162,28 @@ class ApUiTest final : public QObject {
         auto* randomize = page.findChild<QPushButton*>(QStringLiteral("apRandomize"));
         auto* changeSeed = page.findChild<QPushButton*>(QStringLiteral("apSwitchSeed"));
         auto* enemyMode = page.findChild<QComboBox*>(QStringLiteral("enemyMode"));
+        auto* bossPool = page.findChild<QComboBox*>(QStringLiteral("apBossPool"));
         auto* enemySeed = page.findChild<QLineEdit*>(QStringLiteral("apEnemySeed"));
         auto* scaling = page.findChild<QCheckBox*>(QStringLiteral("apEnemyNormalizeStats"));
         QVERIFY(seedEdit && player && play && randomize && changeSeed);
-        QVERIFY(enemyMode && enemySeed && scaling);
+        QVERIFY(enemyMode && bossPool && enemySeed && scaling);
         QVERIFY(!page.findChild<QCheckBox*>(QStringLiteral("apEnemyTierMixing")));
         QVERIFY(!page.findChild<QCheckBox*>(QStringLiteral("apEnemyPreserveLocomotion")));
         QVERIFY(!page.findChild<QCheckBox*>(QStringLiteral("apShuffleBosses")));
         QVERIFY(!page.findChild<QWidget*>(QStringLiteral("apAdvancedEnemyOptions")));
         QCOMPARE(enemyMode->currentIndex(), 0);
+        QCOMPARE(bossPool->currentData().toString(), QStringLiteral("reviewed"));
+        QVERIFY(bossPool->isVisible() && bossPool->isEnabled());
         QVERIFY(!page.findChild<QLabel*>(QStringLiteral("standaloneBossNote"))->isVisible());
         QVERIFY(scaling->isChecked());
         QVERIFY(!play->isEnabled());
         enemyMode->setCurrentIndex(2);
         QVERIFY(!scaling->isEnabled());
+        QVERIFY(!bossPool->isVisible());
         enemyMode->setCurrentIndex(1);
+        QVERIFY(bossPool->isVisible() && bossPool->isEnabled());
+        bossPool->setCurrentIndex(1);
+        QCOMPARE(bossPool->currentData().toString(), QStringLiteral("good"));
         QVERIFY(scaling->isVisible() && scaling->isEnabled());
         QTest::mouseClick(scaling, Qt::LeftButton, Qt::NoModifier,
                           QPoint(10, scaling->height() / 2));
@@ -195,6 +202,7 @@ class ApUiTest final : public QObject {
         QVERIFY(!m_coordinator->GameStarted());
         QCOMPARE(m_emulator->startCalls, 0);
         QVERIFY(play->isEnabled());
+        bossPool->setCurrentIndex(0); // Changing the pool invalidates the prepared layout.
         QTest::mouseClick(play, Qt::LeftButton);
 
         QVERIFY(m_coordinator->IsPlaying());
@@ -219,6 +227,18 @@ class ApUiTest final : public QObject {
         QCOMPARE(enemy.value(QStringLiteral("release_spawns")).toBool(), true);
         QCOMPARE(enemy.value(QStringLiteral("release_chara")).toBool(), true);
         QCOMPARE(enemy.value(QStringLiteral("boss_pool")).toString(), QStringLiteral("reviewed"));
+        QFile prepareAttempts(m_capturedPrepares);
+        QVERIFY(prepareAttempts.open(QIODevice::ReadOnly));
+        const QList<QByteArray> attempts = prepareAttempts.readAll().trimmed().split('\n');
+        QCOMPARE(attempts.size(), 2);
+        const auto preparedBossPool = [](const QByteArray& attempt) {
+            return QJsonDocument::fromJson(attempt).object()
+                .value(QStringLiteral("params")).toObject()
+                .value(QStringLiteral("enemizer")).toObject()
+                .value(QStringLiteral("boss_pool")).toString();
+        };
+        QCOMPARE(preparedBossPool(attempts[0]), QStringLiteral("good"));
+        QCOMPARE(preparedBossPool(attempts[1]), QStringLiteral("reviewed"));
         QVERIFY(page.findChild<QLabel*>(QStringLiteral("apStatus"))->text()
                     .contains(QStringLiteral("117 enemy swaps")));
         QVERIFY(page.findChild<QLabel*>(QStringLiteral("apStatus"))->text()
@@ -544,11 +564,13 @@ class ApUiTest final : public QObject {
         auto* seed = page.findChild<QLineEdit*>(QStringLiteral("standaloneSeed"));
         auto* dlc = page.findChild<QCheckBox*>(QStringLiteral("includeDlc"));
         auto* enemy = page.findChild<QComboBox*>(QStringLiteral("enemyMode"));
+        auto* bossPool = page.findChild<QComboBox*>(QStringLiteral("apBossPool"));
         auto* scaling = page.findChild<QCheckBox*>(QStringLiteral("apEnemyNormalizeStats"));
         auto* randomize = page.findChild<QPushButton*>(QStringLiteral("apRandomize"));
         auto* launch = page.findChild<QPushButton*>(QStringLiteral("apPlay"));
-        QVERIFY(mode && seed && dlc && enemy && scaling && randomize && launch);
+        QVERIFY(mode && seed && dlc && enemy && bossPool && scaling && randomize && launch);
         mode->setCurrentIndex(1);
+        QVERIFY(!bossPool->isVisible());
         QVERIFY(!page.findChild<QLineEdit*>(QStringLiteral("apSeedPath"))->isVisible());
         QVERIFY(seed->isVisible());
         QVERIFY(enemy->model()->index(1, 0).flags().testFlag(Qt::ItemIsEnabled));
@@ -578,6 +600,7 @@ class ApUiTest final : public QObject {
         QCOMPARE(params.value(QStringLiteral("normalize_scaling")).toBool(), false);
         QVERIFY(!params.contains(QStringLiteral("server")));
         QVERIFY(!params.contains(QStringLiteral("player_name")));
+        QVERIFY(!params.contains(QStringLiteral("boss_pool")));
         QTest::mouseClick(launch, Qt::LeftButton);
         QVERIFY(m_coordinator->GameStarted());
         QCOMPARE(m_emulator->startCalls, 1);
@@ -771,10 +794,13 @@ class ApUiTest final : public QObject {
             ApPage page(m_coordinator.get());
             auto* mode = page.findChild<QComboBox*>(QStringLiteral("playMode"));
             auto* enemy = page.findChild<QComboBox*>(QStringLiteral("enemyMode"));
+            auto* bossPool = page.findChild<QComboBox*>(QStringLiteral("apBossPool"));
             auto* scaling = page.findChild<QCheckBox*>(QStringLiteral("apEnemyNormalizeStats"));
             QVERIFY(scaling->isChecked()); // Old default-off setting is not carried forward.
+            QCOMPARE(bossPool->currentData().toString(), QStringLiteral("reviewed"));
             auto* apSeed = page.findChild<QLineEdit*>(QStringLiteral("apSeedPath"));
             apSeed->setText(QStringLiteral("C:/fixture/ap-seed.zip"));
+            bossPool->setCurrentIndex(1);
             scaling->setChecked(false);
             enemy->setCurrentIndex(2);
             mode->setCurrentIndex(1);
@@ -796,9 +822,12 @@ class ApUiTest final : public QObject {
         QVERIFY(!saved.contains("preserve_locomotion"));
         QVERIFY(!saved.contains("shuffle_bosses"));
         QVERIFY(!saved.contains("\"normalize_scaling\""));
+        QCOMPARE(QJsonDocument::fromJson(saved).object()
+                     .value(QStringLiteral("ap_boss_pool")).toString(), QStringLiteral("good"));
         ApPage restored(m_coordinator.get());
         auto* mode = restored.findChild<QComboBox*>(QStringLiteral("playMode"));
         auto* enemy = restored.findChild<QComboBox*>(QStringLiteral("enemyMode"));
+        auto* bossPool = restored.findChild<QComboBox*>(QStringLiteral("apBossPool"));
         auto* scaling = restored.findChild<QCheckBox*>(QStringLiteral("apEnemyNormalizeStats"));
         auto* launch = restored.findChild<QPushButton*>(QStringLiteral("apPlay"));
         QCOMPARE(mode->currentIndex(), 1);
@@ -810,6 +839,8 @@ class ApUiTest final : public QObject {
         QVERIFY(launch->isEnabled()); // Can rebuild, but has no prepared authority.
         mode->setCurrentIndex(0);
         QCOMPARE(enemy->currentIndex(), 2);
+        QCOMPARE(bossPool->currentData().toString(), QStringLiteral("good"));
+        QVERIFY(!bossPool->isVisible());
         QVERIFY(!scaling->isChecked());
         QCOMPARE(restored.findChild<QLineEdit*>(QStringLiteral("apSeedPath"))->text(),
                  QStringLiteral("C:/fixture/ap-seed.zip"));
