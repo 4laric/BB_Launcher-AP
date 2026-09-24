@@ -113,6 +113,8 @@ class ApUiTest final : public QObject {
         qputenv("BB_AP_STATE_ROOT", (m_scratch->path() + QStringLiteral("/state")).toLocal8Bit());
         m_capturedPrepare = m_scratch->path() + QStringLiteral("/prepare-request.json");
         qputenv("BB_AP_TEST_CAPTURE_REQUEST", m_capturedPrepare.toLocal8Bit());
+        m_capturedVerify = m_scratch->path() + QStringLiteral("/verify-request.json");
+        qputenv("BB_AP_TEST_CAPTURE_VERIFY", m_capturedVerify.toLocal8Bit());
         m_opLog = m_scratch->path() + QStringLiteral("/backend-ops.txt");
         qputenv("BB_AP_TEST_OP_LOG", m_opLog.toLocal8Bit());
 
@@ -132,6 +134,7 @@ class ApUiTest final : public QObject {
         m_coordinator.reset();
         m_emulator.reset();
         qunsetenv("BB_AP_TEST_CAPTURE_REQUEST");
+        qunsetenv("BB_AP_TEST_CAPTURE_VERIFY");
         qunsetenv("BB_AP_TEST_OP_LOG");
         QVERIFY(QDir::setCurrent(m_previousCwd));
         m_scratch.reset();
@@ -338,7 +341,8 @@ class ApUiTest final : public QObject {
         mode->setCurrentIndex(1);
         QVERIFY(!page.findChild<QLineEdit*>(QStringLiteral("apSeedPath"))->isVisible());
         QVERIFY(seed->isVisible());
-        QVERIFY(!enemy->model()->index(1, 0).flags().testFlag(Qt::ItemIsEnabled));
+        QVERIFY(enemy->model()->index(1, 0).flags().testFlag(Qt::ItemIsEnabled));
+        enemy->setCurrentIndex(1);
         seed->setText(QStringLiteral("standalone-test-seed"));
         dlc->setChecked(false);
         QTest::mouseClick(randomize, Qt::LeftButton);
@@ -354,11 +358,17 @@ class ApUiTest final : public QObject {
         QCOMPARE(params.value(QStringLiteral("seed")).toString(), QStringLiteral("standalone-test-seed"));
         QCOMPARE(params.value(QStringLiteral("include_dlc")).toBool(), false);
         QCOMPARE(params.value(QStringLiteral("randomize_enemies")).toBool(), true);
+        QCOMPARE(params.value(QStringLiteral("expanded_coverage")).toBool(), true);
         QVERIFY(!params.contains(QStringLiteral("server")));
         QVERIFY(!params.contains(QStringLiteral("player_name")));
         QTest::mouseClick(launch, Qt::LeftButton);
         QVERIFY(m_coordinator->GameStarted());
         QCOMPARE(m_emulator->startCalls, 1);
+        QFile capturedVerify(m_capturedVerify);
+        QVERIFY(capturedVerify.open(QIODevice::ReadOnly));
+        const QJsonObject verifyParams = QJsonDocument::fromJson(capturedVerify.readAll())
+                                             .object().value(QStringLiteral("params")).toObject();
+        QCOMPARE(verifyParams.value(QStringLiteral("expanded_coverage")).toBool(), true);
         QFile ops(m_opLog);
         QVERIFY(ops.open(QIODevice::ReadOnly));
         const QByteArray log = ops.readAll();
@@ -538,9 +548,9 @@ class ApUiTest final : public QObject {
             auto* enemy = page.findChild<QComboBox*>(QStringLiteral("enemyMode"));
             auto* apSeed = page.findChild<QLineEdit*>(QStringLiteral("apSeedPath"));
             apSeed->setText(QStringLiteral("C:/fixture/ap-seed.zip"));
-            enemy->setCurrentIndex(1);
-            mode->setCurrentIndex(1);
             enemy->setCurrentIndex(2);
+            mode->setCurrentIndex(1);
+            enemy->setCurrentIndex(1);
             page.findChild<QLineEdit*>(QStringLiteral("standaloneSeed"))
                 ->setText(QStringLiteral("remembered-seed"));
             page.findChild<QCheckBox*>(QStringLiteral("includeDlc"))->setChecked(false);
@@ -560,13 +570,13 @@ class ApUiTest final : public QObject {
         auto* enemy = restored.findChild<QComboBox*>(QStringLiteral("enemyMode"));
         auto* launch = restored.findChild<QPushButton*>(QStringLiteral("apPlay"));
         QCOMPARE(mode->currentIndex(), 1);
-        QCOMPARE(enemy->currentIndex(), 2);
+        QCOMPARE(enemy->currentIndex(), 1);
         QCOMPARE(restored.findChild<QLineEdit*>(QStringLiteral("standaloneSeed"))->text(),
                  QStringLiteral("remembered-seed"));
         QVERIFY(!restored.findChild<QCheckBox*>(QStringLiteral("includeDlc"))->isChecked());
         QVERIFY(launch->isEnabled()); // Can rebuild, but has no prepared authority.
         mode->setCurrentIndex(0);
-        QCOMPARE(enemy->currentIndex(), 1);
+        QCOMPARE(enemy->currentIndex(), 2);
         QCOMPARE(restored.findChild<QLineEdit*>(QStringLiteral("apSeedPath"))->text(),
                  QStringLiteral("C:/fixture/ap-seed.zip"));
     }
@@ -639,6 +649,7 @@ class ApUiTest final : public QObject {
   private:
     QString m_previousCwd;
     QString m_capturedPrepare;
+    QString m_capturedVerify;
     QString m_opLog;
     std::unique_ptr<QTemporaryDir> m_scratch;
     QString m_gameRoot;

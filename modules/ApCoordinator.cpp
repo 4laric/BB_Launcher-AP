@@ -374,11 +374,16 @@ bool ApCoordinator::PrepareStandalone(const StandalonePlayRequest& request,
         if (error != nullptr) *error = tr("Enter a seed first.");
         return false;
     }
+    if (request.expandedCoverage && !request.randomizeEnemies) {
+        if (error != nullptr) *error = tr("Expanded coverage requires enemy randomization.");
+        return false;
+    }
     if (!EnsureBackend(error)) return false;
     const QJsonObject params{
         {QStringLiteral("seed"), request.seed.trimmed()},
         {QStringLiteral("include_dlc"), request.includeDlc},
         {QStringLiteral("randomize_enemies"), request.randomizeEnemies},
+        {QStringLiteral("expanded_coverage"), request.expandedCoverage},
         {QStringLiteral("game_root"), request.gameRoot},
         {QStringLiteral("mods_root"), m_modRoots.inactive},
         {QStringLiteral("state_root"), m_stateRoot},
@@ -397,6 +402,7 @@ bool ApCoordinator::PrepareStandalone(const StandalonePlayRequest& request,
     result.receiptPath = response.result.value(QStringLiteral("receipt_path")).toString();
     result.includeDlc = request.includeDlc;
     result.randomizeEnemies = request.randomizeEnemies;
+    result.expandedCoverage = request.expandedCoverage;
     result.seed = response.result.value(QStringLiteral("seed")).toString();
     result.title = response.result.value(QStringLiteral("display_name")).toString();
     if (result.playId.isEmpty() || result.packageName.isEmpty() ||
@@ -451,7 +457,8 @@ bool ApCoordinator::Activate(const Prepared& prepared, bool allowDisableConflict
                         {QStringLiteral("game_root"), m_gameRoot},
                         {QStringLiteral("mods_root"), m_modRoots.inactive},
                         {QStringLiteral("include_dlc"), prepared.includeDlc},
-                        {QStringLiteral("randomize_enemies"), prepared.randomizeEnemies}}, 120000);
+                        {QStringLiteral("randomize_enemies"), prepared.randomizeEnemies},
+                        {QStringLiteral("expanded_coverage"), prepared.expandedCoverage}}, 120000);
         if (!verified.ok) {
             if (error != nullptr) *error = verified.error.detail;
             return false;

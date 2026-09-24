@@ -80,7 +80,10 @@ int main(int argc, char** argv) {
             if (payload.open(QIODevice::WriteOnly)) payload.write("standalone-map");
             const QString receiptPath = packagePath + QStringLiteral("/receipt.json");
             QFile receipt(receiptPath);
-            if (receipt.open(QIODevice::WriteOnly)) receipt.write("fixture-receipt");
+            if (receipt.open(QIODevice::WriteOnly)) {
+                receipt.write(params.value("expanded_coverage").toBool()
+                    ? "fixture-receipt-expanded" : "fixture-receipt-reviewed");
+            }
             const QString capturePath = qEnvironmentVariable("BB_AP_TEST_CAPTURE_REQUEST");
             if (!capturePath.isEmpty()) {
                 QFile capture(capturePath);
@@ -92,9 +95,19 @@ int main(int argc, char** argv) {
                       {"receipt_path", receiptPath}, {"receipt_id", "fixture-standalone"},
                       {"seed", params.value("seed")}, {"display_name", "Standalone fixture"}};
         } else if (op == QStringLiteral("verify_standalone")) {
+            const QString capturePath = qEnvironmentVariable("BB_AP_TEST_CAPTURE_VERIFY");
+            if (!capturePath.isEmpty()) {
+                QFile capture(capturePath);
+                if (capture.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                    capture.write(QJsonDocument(request).toJson(QJsonDocument::Compact));
+                }
+            }
             QFile receipt(params.value("receipt_path").toString());
+            const QByteArray expected = params.value("expanded_coverage").toBool()
+                ? QByteArray("fixture-receipt-expanded")
+                : QByteArray("fixture-receipt-reviewed");
             if (!receipt.open(QIODevice::ReadOnly) ||
-                receipt.readAll() != QByteArray("fixture-receipt")) {
+                receipt.readAll() != expected) {
                 succeeded = false;
                 error = {{"code", "receipt-mismatch"},
                          {"detail", "Standalone package receipt changed"}};

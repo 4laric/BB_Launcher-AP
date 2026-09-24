@@ -51,6 +51,7 @@ struct StandalonePlayRequest {
     QString seed;
     bool includeDlc = true;
     bool randomizeEnemies = true;
+    bool expandedCoverage = false;
 };
 
 // Managed by the AP coordinator in copy mode. The default paths match the
@@ -110,6 +111,7 @@ class ApCoordinator : public QObject {
         QString receiptPath;
         bool includeDlc = true;
         bool randomizeEnemies = true;
+        bool expandedCoverage = false;
         QString seed;
         QString slot;
         QString server;

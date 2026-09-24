@@ -3,6 +3,7 @@
 
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QIcon>
 #include <QMessageBox>
 
 #if defined(_MSC_VER)
@@ -26,6 +27,7 @@ int main(int argc, char* argv[]) {
 
     QApplication a(argc, argv);
     QApplication::setStyle("Fusion");
+    QApplication::setWindowIcon(QIcon(QStringLiteral(":/BBicon2.ico")));
 
     QCommandLineParser parser;
     QCommandLineOption noGui("n");

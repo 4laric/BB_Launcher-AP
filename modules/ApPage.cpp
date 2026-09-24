@@ -15,7 +15,6 @@
 #include <QPalette>
 #include <QSaveFile>
 #include <QSignalBlocker>
-#include <QStandardItemModel>
 #include <QVBoxLayout>
 
 #include "ApFork.h"
@@ -377,12 +376,8 @@ void ApPage::RefreshMode() {
     m_serverEdit->setVisible(m_serverLabel->isVisible());
     m_passwordLabel->setVisible(!standalone);
     m_passwordEdit->setVisible(!standalone);
-    // The standalone planner currently supports enemy randomization as one
-    // setting. Its expanded option is reserved for AP's additional contracts.
-    if (auto* model = qobject_cast<QStandardItemModel*>(m_enemyMode->model())) {
-        model->item(1)->setEnabled(!standalone);
-    }
-    if (standalone && m_enemyMode->currentIndex() == 1) m_enemyMode->setCurrentIndex(0);
+    // Standalone expanded coverage uses the reviewed release tranches;
+    // AP-only boss and tuning controls remain outside standalone mode.
     m_advancedEnemyOptions->setVisible(!standalone);
     m_advancedEnemyPanel->setVisible(!standalone && m_advancedEnemyOptions->isChecked());
     m_enemySeedRow->setVisible(!standalone && m_enemyMode->currentIndex() != 2);
@@ -400,7 +395,8 @@ void ApPage::LoadSettings() {
         const QSignalBlocker blockEnemy(m_enemyMode);
         const QSignalBlocker blockDlc(m_includeDlc);
         m_apEnemyMode = qBound(0, saved.value(QStringLiteral("ap_enemy_mode")).toInt(), 2);
-        m_standaloneEnemyMode = saved.value(QStringLiteral("standalone_enemy_mode")).toInt() == 2 ? 2 : 0;
+        m_standaloneEnemyMode = qBound(0,
+            saved.value(QStringLiteral("standalone_enemy_mode")).toInt(), 2);
         m_lastModeIndex = saved.value(QStringLiteral("mode")).toInt() == 1 ? 1 : 0;
         m_modeCombo->setCurrentIndex(m_lastModeIndex);
         m_enemyMode->setCurrentIndex(m_lastModeIndex == 1 ? m_standaloneEnemyMode : m_apEnemyMode);
@@ -604,6 +600,7 @@ void ApPage::RandomizeClicked() {
         Common::PathToQString(standaloneRequest.gameRoot, Common::installPath);
         standaloneRequest.includeDlc = m_includeDlc->isChecked();
         standaloneRequest.randomizeEnemies = m_enemyMode->currentIndex() != 2;
+        standaloneRequest.expandedCoverage = m_enemyMode->currentIndex() == 1;
     } else if (!BuildRequest(&apRequest, &failure)) {
         ShowError(failure);
         return;
