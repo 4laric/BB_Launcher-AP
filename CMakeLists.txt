@@ -261,6 +261,8 @@ set(PROJECT_SOURCES
     settings/formatting.h
     settings/config.cpp
     settings/config.h
+    settings/RegularSettingsImport.cpp
+    settings/RegularSettingsImport.h
     settings/control_settings.cpp
     settings/control_settings.h
     settings/control_settings.ui

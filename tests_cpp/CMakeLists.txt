@@ -7,6 +7,15 @@
 
 find_package(Qt6 REQUIRED COMPONENTS Core Test)
 
+add_executable(regular_settings_import_test
+    regular_settings_import_test.cpp
+    ../settings/RegularSettingsImport.cpp)
+target_include_directories(regular_settings_import_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+target_link_libraries(regular_settings_import_test PRIVATE Qt6::Core Qt6::Test toml11::toml11)
+set_target_properties(regular_settings_import_test PROPERTIES CXX_STANDARD 23 AUTOMOC ON)
+add_test(NAME regular_settings_import_test COMMAND regular_settings_import_test -o
+  "${CMAKE_CURRENT_BINARY_DIR}/regular_settings_import_results.txt,txt")
+
 add_executable(apbackend_test apbackend_test.cpp ../modules/ApBackend.cpp)
 target_include_directories(apbackend_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries(apbackend_test PRIVATE Qt6::Core Qt6::Test)

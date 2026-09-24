@@ -26,7 +26,6 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QTimer>
-#include <QToolButton>
 
 #include "ApCoordinator.h"
 
@@ -63,6 +62,7 @@ class ApPage : public QDialog {
     void LoadSettings();
     void SaveSettings() const;
     bool BuildRequest(ApPlayRequest* request, QString* error) const;
+    bool PrepareCurrent(bool* recoveredCollision);
     void closeEvent(QCloseEvent* event) override;
 
     ApCoordinator* m_coordinator;
@@ -82,18 +82,10 @@ class ApPage : public QDialog {
     QLineEdit* m_passwordEdit = nullptr;
     QGroupBox* m_enemizerGroup = nullptr;
     QComboBox* m_enemyMode = nullptr;
+    QLabel* m_standaloneBossNote = nullptr;
     QLineEdit* m_enemySeedEdit = nullptr;
     QWidget* m_enemySeedRow = nullptr;
-    QGroupBox* m_expandedCoverage = nullptr;
-    QCheckBox* m_releaseContracts = nullptr;
-    QCheckBox* m_releaseSpawns = nullptr;
-    QCheckBox* m_releaseChara = nullptr;
-    QToolButton* m_advancedEnemyOptions = nullptr;
-    QWidget* m_advancedEnemyPanel = nullptr;
-    QCheckBox* m_allowTierMixing = nullptr;
-    QCheckBox* m_preserveLocomotion = nullptr;
     QCheckBox* m_normalizeScaling = nullptr;
-    QCheckBox* m_shuffleBosses = nullptr;
     QPushButton* m_playButton = nullptr;
     QPushButton* m_randomizeButton = nullptr;
     QPushButton* m_cancelButton = nullptr;
@@ -110,6 +102,8 @@ class ApPage : public QDialog {
     int m_lastModeIndex = 0;
     int m_apEnemyMode = 0;
     int m_standaloneEnemyMode = 0;
+    bool m_apScaling = true;
+    bool m_standaloneScaling = true;
     QString m_savedPlayerName;
     QString m_savedServer;
     QString m_savedApSeedPath;

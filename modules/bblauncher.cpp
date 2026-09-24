@@ -5,6 +5,7 @@
 #include <iostream>
 #include <thread>
 #include <QDesktopServices>
+#include <QDir>
 #include <QFileDialog>
 #include <QInputDialog>
 #include <QMessageBox>
@@ -24,6 +25,7 @@
 #include "modules/Zar/game_backend.h"
 #include "modules/ui_bblauncher.h"
 #include "settings/LauncherSettings.h"
+#include "settings/RegularSettingsImport.h"
 #include "settings/PSF/psf.h"
 #include "settings/ShadCheatsPatches.h"
 #include "settings/ShadSettings.h"
@@ -90,7 +92,7 @@ BBLauncher::BBLauncher(bool noGUI, bool noInstanceRunning, QWidget* parent)
     ui->IconButtonsLayout->addLayout(
         createIconTextButtonLayout(":mod_manager.png", "Mod Manager", modManagerButton));
     ui->IconButtonsLayout->addLayout(
-        createIconTextButtonLayout(":BBIcon.png", "Randomizer", archipelagoButton));
+        createIconTextButtonLayout(":BBIcon.png", "Archipelago", archipelagoButton));
     ui->IconButtonsLayout->addLayout(
         createIconTextButtonLayout(":downloader.png", "Mod Downloader", modDownloaderButton));
     ui->IconButtonsLayout->addLayout(
@@ -114,7 +116,19 @@ BBLauncher::BBLauncher(bool noGUI, bool noInstanceRunning, QWidget* parent)
     logDisplay = new QAnsiTextEdit(this);
     ui->logLayout->addWidget(logDisplay);
 
+#ifdef BB_AP_FORK
+    const auto importedSettings = noinstancerunning
+        ? RegularSettingsImport::ImportFirstRun(
+              Config::SettingsFile, Common::PathFromQString(QCoreApplication::applicationDirPath()),
+              Common::PathFromQString(QDir::homePath()))
+        : std::filesystem::path{};
+#endif
     Config::LoadSettings();
+#ifdef BB_AP_FORK
+    if (!importedSettings.empty()) {
+        LogInfo("Imported game, emulator, and launcher preferences from a regular BBLauncher installation.");
+    }
+#endif
 
     UserSettings.Load();
     m_emu_settings->Load();

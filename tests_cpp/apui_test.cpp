@@ -113,6 +113,10 @@ class ApUiTest final : public QObject {
         qputenv("BB_AP_STATE_ROOT", (m_scratch->path() + QStringLiteral("/state")).toLocal8Bit());
         m_capturedPrepare = m_scratch->path() + QStringLiteral("/prepare-request.json");
         qputenv("BB_AP_TEST_CAPTURE_REQUEST", m_capturedPrepare.toLocal8Bit());
+        m_capturedPrepares = m_scratch->path() + QStringLiteral("/prepare-requests.jsonl");
+        qputenv("BB_AP_TEST_CAPTURE_PREPARES", m_capturedPrepares.toLocal8Bit());
+        m_capturedVerify = m_scratch->path() + QStringLiteral("/verify-request.json");
+        qputenv("BB_AP_TEST_CAPTURE_VERIFY", m_capturedVerify.toLocal8Bit());
         m_opLog = m_scratch->path() + QStringLiteral("/backend-ops.txt");
         qputenv("BB_AP_TEST_OP_LOG", m_opLog.toLocal8Bit());
 
@@ -132,6 +136,12 @@ class ApUiTest final : public QObject {
         m_coordinator.reset();
         m_emulator.reset();
         qunsetenv("BB_AP_TEST_CAPTURE_REQUEST");
+        qunsetenv("BB_AP_TEST_CAPTURE_PREPARES");
+        qunsetenv("BB_AP_TEST_COLLIDE_ENEMY_SEED");
+        qunsetenv("BB_AP_TEST_MIGRATION_FAIL");
+        qunsetenv("BB_AP_TEST_LEGACY_MARKER");
+        qunsetenv("BB_AP_TEST_REQUIRE_DEACTIVATED");
+        qunsetenv("BB_AP_TEST_CAPTURE_VERIFY");
         qunsetenv("BB_AP_TEST_OP_LOG");
         QVERIFY(QDir::setCurrent(m_previousCwd));
         m_scratch.reset();
@@ -152,17 +162,28 @@ class ApUiTest final : public QObject {
         auto* randomize = page.findChild<QPushButton*>(QStringLiteral("apRandomize"));
         auto* changeSeed = page.findChild<QPushButton*>(QStringLiteral("apSwitchSeed"));
         auto* enemyMode = page.findChild<QComboBox*>(QStringLiteral("enemyMode"));
-        auto* advanced = page.findChild<QToolButton*>(QStringLiteral("apAdvancedEnemyOptions"));
         auto* enemySeed = page.findChild<QLineEdit*>(QStringLiteral("apEnemySeed"));
+        auto* scaling = page.findChild<QCheckBox*>(QStringLiteral("apEnemyNormalizeStats"));
         QVERIFY(seedEdit && player && play && randomize && changeSeed);
-        QVERIFY(enemyMode && advanced && enemySeed);
+        QVERIFY(enemyMode && enemySeed && scaling);
+        QVERIFY(!page.findChild<QCheckBox*>(QStringLiteral("apEnemyTierMixing")));
+        QVERIFY(!page.findChild<QCheckBox*>(QStringLiteral("apEnemyPreserveLocomotion")));
+        QVERIFY(!page.findChild<QCheckBox*>(QStringLiteral("apShuffleBosses")));
+        QVERIFY(!page.findChild<QWidget*>(QStringLiteral("apAdvancedEnemyOptions")));
         QCOMPARE(enemyMode->currentIndex(), 0);
+        QVERIFY(!page.findChild<QLabel*>(QStringLiteral("standaloneBossNote"))->isVisible());
+        QVERIFY(scaling->isChecked());
         QVERIFY(!play->isEnabled());
         enemyMode->setCurrentIndex(2);
-        QVERIFY(!advanced->isEnabled());
+        QVERIFY(!scaling->isEnabled());
         enemyMode->setCurrentIndex(1);
-        QVERIFY(advanced->isEnabled());
-        advanced->click();
+        QVERIFY(scaling->isVisible() && scaling->isEnabled());
+        QTest::mouseClick(scaling, Qt::LeftButton, Qt::NoModifier,
+                          QPoint(10, scaling->height() / 2));
+        QVERIFY(!scaling->isChecked());
+        QTest::mouseClick(scaling, Qt::LeftButton, Qt::NoModifier,
+                          QPoint(10, scaling->height() / 2));
+        QVERIFY(scaling->isChecked());
         enemySeed->setText(QStringLiteral("fixture-enemy-seed"));
         seedEdit->setText(seedPath);
         QVERIFY(QMetaObject::invokeMethod(&page, "SeedChanged"));
@@ -190,9 +211,9 @@ class ApUiTest final : public QObject {
         QCOMPARE(enemy.value(QStringLiteral("enabled")).toBool(), true);
         QCOMPARE(enemy.value(QStringLiteral("seed")).toString(),
                  QStringLiteral("fixture-enemy-seed"));
-        QCOMPARE(enemy.value(QStringLiteral("allow_tier_mixing")).toBool(), false);
+        QCOMPARE(enemy.value(QStringLiteral("allow_tier_mixing")).toBool(), true);
         QCOMPARE(enemy.value(QStringLiteral("preserve_locomotion")).toBool(), false);
-        QCOMPARE(enemy.value(QStringLiteral("normalize_scaling")).toBool(), false);
+        QCOMPARE(enemy.value(QStringLiteral("normalize_scaling")).toBool(), true);
         QCOMPARE(enemy.value(QStringLiteral("boss_canary")).toBool(), false);
         QCOMPARE(enemy.value(QStringLiteral("release_contracts")).toBool(), true);
         QCOMPARE(enemy.value(QStringLiteral("release_spawns")).toBool(), true);
@@ -325,6 +346,197 @@ class ApUiTest final : public QObject {
         QVERIFY(response.ok);
     }
 
+    void preparedPackageCollisionRerandomizesWithoutLaunching() {
+        const QString seedPath = m_scratch->path() + QStringLiteral("/collision.bbseed.json");
+        QFile seed(seedPath);
+        QVERIFY(seed.open(QIODevice::WriteOnly));
+        seed.write("fixture");
+        seed.close();
+        qputenv("BB_AP_TEST_COLLIDE_ENEMY_SEED", "collision-seed");
+
+        ApPage page(m_coordinator.get());
+        page.show();
+        auto* apSeed = page.findChild<QLineEdit*>(QStringLiteral("apSeedPath"));
+        auto* enemySeed = page.findChild<QLineEdit*>(QStringLiteral("apEnemySeed"));
+        auto* launch = page.findChild<QPushButton*>(QStringLiteral("apPlay"));
+        QVERIFY(apSeed && enemySeed && launch);
+        apSeed->setText(seedPath);
+        QVERIFY(QMetaObject::invokeMethod(&page, "SeedChanged"));
+        page.findChild<QComboBox*>(QStringLiteral("apPlayerChoice"))
+            ->setCurrentText(QStringLiteral("Bob"));
+        enemySeed->setText(QStringLiteral("collision-seed"));
+
+        QTimer answer;
+        answer.setInterval(10);
+        connect(&answer, &QTimer::timeout, &page, [&] {
+            auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+            if (!box) return;
+            auto* button = box->findChild<QPushButton*>(QStringLiteral("rerandomizeEnemiesButton"));
+            if (!button) return;
+            answer.stop();
+            QTest::mouseClick(button, Qt::LeftButton);
+        });
+        answer.start();
+        QTest::mouseClick(launch, Qt::LeftButton);
+        QVERIFY(!answer.isActive());
+        QVERIFY(m_coordinator->HasSession());
+        QVERIFY(!m_coordinator->GameStarted());
+        QCOMPARE(m_emulator->startCalls, 0);
+
+        QFile attempts(m_capturedPrepares);
+        QVERIFY(attempts.open(QIODevice::ReadOnly));
+        const QList<QByteArray> lines = attempts.readAll().trimmed().split('\n');
+        QCOMPARE(lines.size(), 2);
+        QJsonObject first = QJsonDocument::fromJson(lines[0]).object()
+                                .value(QStringLiteral("params")).toObject();
+        QJsonObject second = QJsonDocument::fromJson(lines[1]).object()
+                                 .value(QStringLiteral("params")).toObject();
+        QJsonObject firstEnemy = first.value(QStringLiteral("enemizer")).toObject();
+        QJsonObject secondEnemy = second.value(QStringLiteral("enemizer")).toObject();
+        QCOMPARE(firstEnemy.value(QStringLiteral("seed")).toString(), QStringLiteral("collision-seed"));
+        const QString freshSeed = secondEnemy.value(QStringLiteral("seed")).toString();
+        QVERIFY(!freshSeed.isEmpty() && freshSeed != QStringLiteral("collision-seed"));
+        QCOMPARE(enemySeed->text(), freshSeed);
+        firstEnemy.remove(QStringLiteral("seed"));
+        secondEnemy.remove(QStringLiteral("seed"));
+        QVERIFY(firstEnemy == secondEnemy);
+        first.insert(QStringLiteral("enemizer"), firstEnemy);
+        second.insert(QStringLiteral("enemizer"), secondEnemy);
+        QVERIFY(first == second); // Same AP world, player, server, and options.
+        QFile settings(ApBackend::DefaultStateRoot() + QStringLiteral("/ui-settings.json"));
+        QVERIFY(settings.open(QIODevice::ReadOnly));
+        QCOMPARE(QJsonDocument::fromJson(settings.readAll()).object()
+                     .value(QStringLiteral("enemy_seed")).toString(), freshSeed);
+        QFile ops(m_opLog);
+        QVERIFY(ops.open(QIODevice::ReadOnly));
+        const QByteArray log = ops.readAll();
+        QVERIFY(!log.contains("verify_and_arm\n"));
+        QVERIFY(!log.contains("connect_and_start_client\n"));
+    }
+
+    void preparedPackageCollisionCancelLeavesSeedUntouched() {
+        const QString seedPath = m_scratch->path() + QStringLiteral("/collision.bbseed.json");
+        QFile seed(seedPath);
+        QVERIFY(seed.open(QIODevice::WriteOnly));
+        seed.write("fixture");
+        seed.close();
+        qputenv("BB_AP_TEST_COLLIDE_ENEMY_SEED", "collision-seed");
+
+        ApPage page(m_coordinator.get());
+        page.show();
+        page.findChild<QLineEdit*>(QStringLiteral("apSeedPath"))->setText(seedPath);
+        QVERIFY(QMetaObject::invokeMethod(&page, "SeedChanged"));
+        auto* enemySeed = page.findChild<QLineEdit*>(QStringLiteral("apEnemySeed"));
+        enemySeed->setText(QStringLiteral("collision-seed"));
+        QTimer answer;
+        answer.setInterval(10);
+        connect(&answer, &QTimer::timeout, &page, [&] {
+            auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+            if (!box) return;
+            answer.stop();
+            QTest::mouseClick(box->button(QMessageBox::Cancel), Qt::LeftButton);
+        });
+        answer.start();
+        QTest::mouseClick(page.findChild<QPushButton*>(QStringLiteral("apRandomize")),
+                          Qt::LeftButton);
+        QVERIFY(!answer.isActive());
+        QCOMPARE(enemySeed->text(), QStringLiteral("collision-seed"));
+        QCOMPARE(m_coordinator->lastErrorCode(), QStringLiteral("package-exists"));
+        QVERIFY(!m_coordinator->HasSession());
+        QCOMPARE(m_emulator->startCalls, 0);
+        QFile attempts(m_capturedPrepares);
+        QVERIFY(attempts.open(QIODevice::ReadOnly));
+        QCOMPARE(attempts.readAll().trimmed().split('\n').size(), 1);
+    }
+
+    void legacyMigrationFailureStopsBeforeActivation() {
+        qputenv("BB_AP_TEST_MIGRATION_FAIL", "1");
+        const QString seedPath = m_scratch->path() + QStringLiteral("/legacy.bbseed.json");
+        QFile seed(seedPath);
+        QVERIFY(seed.open(QIODevice::WriteOnly));
+        seed.write("fixture");
+        seed.close();
+        QString error;
+        QVERIFY2(m_coordinator->Configure(m_gameRoot,
+                    QCoreApplication::applicationDirPath() + QStringLiteral("/ap_backend"),
+                    ApBackend::DefaultStateRoot(), &error), qPrintable(error));
+        ApPlayRequest request{m_gameRoot, seedPath, QStringLiteral("Alice"), {}, {}};
+        ApCoordinator::Prepared prepared;
+        QVERIFY2(m_coordinator->Prepare(request, &prepared, &error), qPrintable(error));
+        QVERIFY(!m_coordinator->Activate(prepared, false, nullptr, &error));
+        QCOMPARE(m_coordinator->lastErrorCode(), QStringLiteral("legacy-owner-conflict"));
+        QVERIFY(error.contains(QStringLiteral("previous Archipelago setup")));
+        QVERIFY(!QDir(QDir::currentPath() +
+                      QStringLiteral("/BBLauncher/Mods-Active (DO NOT DELETE)/Archipelago-Fixture")).exists());
+        QCOMPARE(m_emulator->startCalls, 0);
+        QFile ops(m_opLog);
+        QVERIFY(ops.open(QIODevice::ReadOnly));
+        const QByteArray log = ops.readAll();
+        QVERIFY(log.contains("migrate_legacy_overlay\n"));
+        QVERIFY(!log.contains("verify_and_arm\n"));
+    }
+
+    void legacyMigrationDeactivatesSameManagedPackageFirst() {
+        const QString active = QDir::currentPath() +
+            QStringLiteral("/BBLauncher/Mods-Active (DO NOT DELETE)/Archipelago-Fixture");
+        const QString marker = m_scratch->path() +
+            QStringLiteral("/CUSA03173-mods/.bb-ap-owner.json");
+        qputenv("BB_AP_TEST_LEGACY_MARKER", marker.toLocal8Bit());
+        qputenv("BB_AP_TEST_REQUIRE_DEACTIVATED", active.toLocal8Bit());
+        const QString seedPath = m_scratch->path() + QStringLiteral("/legacy.bbseed.json");
+        QFile seed(seedPath);
+        QVERIFY(seed.open(QIODevice::WriteOnly));
+        seed.write("fixture");
+        seed.close();
+        QString error;
+        QVERIFY2(m_coordinator->Configure(m_gameRoot,
+                    QCoreApplication::applicationDirPath() + QStringLiteral("/ap_backend"),
+                    ApBackend::DefaultStateRoot(), &error), qPrintable(error));
+        ApPlayRequest request{m_gameRoot, seedPath, QStringLiteral("Alice"), {}, {}};
+        ApCoordinator::Prepared prepared;
+        QVERIFY2(m_coordinator->Prepare(request, &prepared, &error), qPrintable(error));
+        QVERIFY2(m_coordinator->Activate(prepared, false, nullptr, &error), qPrintable(error));
+        QVERIFY(QDir(active).exists());
+        QVERIFY(QDir().mkpath(QFileInfo(marker).absolutePath()));
+        QFile owner(marker);
+        QVERIFY(owner.open(QIODevice::WriteOnly));
+        owner.write("fixture-legacy-owner");
+        owner.close();
+        QVERIFY2(m_coordinator->Activate(prepared, false, nullptr, &error), qPrintable(error));
+        QVERIFY(!QFile::exists(marker));
+        QVERIFY(QDir(active).exists());
+        QCOMPARE(m_emulator->startCalls, 0);
+    }
+
+    void failedNewActivationAfterLegacyMigrationExplainsRecovery() {
+        const QString marker = m_scratch->path() +
+            QStringLiteral("/CUSA03173-mods/.bb-ap-owner.json");
+        qputenv("BB_AP_TEST_LEGACY_MARKER", marker.toLocal8Bit());
+        const QString seedPath = m_scratch->path() + QStringLiteral("/legacy.bbseed.json");
+        QFile seed(seedPath);
+        QVERIFY(seed.open(QIODevice::WriteOnly));
+        seed.write("fixture");
+        seed.close();
+        QString error;
+        QVERIFY2(m_coordinator->Configure(m_gameRoot,
+                    QCoreApplication::applicationDirPath() + QStringLiteral("/ap_backend"),
+                    ApBackend::DefaultStateRoot(), &error), qPrintable(error));
+        ApPlayRequest request{m_gameRoot, seedPath, QStringLiteral("Alice"), {}, {}};
+        ApCoordinator::Prepared prepared;
+        QVERIFY2(m_coordinator->Prepare(request, &prepared, &error), qPrintable(error));
+        QVERIFY(QDir().mkpath(QFileInfo(marker).absolutePath()));
+        QFile owner(marker);
+        QVERIFY(owner.open(QIODevice::WriteOnly));
+        owner.write("fixture-legacy-owner");
+        owner.close();
+        prepared.packageName = QStringLiteral("Archipelago-Missing");
+        QVERIFY(!m_coordinator->Activate(prepared, false, nullptr, &error));
+        QVERIFY(error.contains(QStringLiteral("backup was kept")));
+        QVERIFY(error.contains(QStringLiteral("new mod was not activated")));
+        QVERIFY(!QFile::exists(marker));
+        QCOMPARE(m_emulator->startCalls, 0);
+    }
+
     void standalonePrepareVerifyLaunchWithoutClient() {
         ApPage page(m_coordinator.get());
         page.show();
@@ -332,13 +544,21 @@ class ApUiTest final : public QObject {
         auto* seed = page.findChild<QLineEdit*>(QStringLiteral("standaloneSeed"));
         auto* dlc = page.findChild<QCheckBox*>(QStringLiteral("includeDlc"));
         auto* enemy = page.findChild<QComboBox*>(QStringLiteral("enemyMode"));
+        auto* scaling = page.findChild<QCheckBox*>(QStringLiteral("apEnemyNormalizeStats"));
         auto* randomize = page.findChild<QPushButton*>(QStringLiteral("apRandomize"));
         auto* launch = page.findChild<QPushButton*>(QStringLiteral("apPlay"));
-        QVERIFY(mode && seed && dlc && enemy && randomize && launch);
+        QVERIFY(mode && seed && dlc && enemy && scaling && randomize && launch);
         mode->setCurrentIndex(1);
         QVERIFY(!page.findChild<QLineEdit*>(QStringLiteral("apSeedPath"))->isVisible());
         QVERIFY(seed->isVisible());
-        QVERIFY(!enemy->model()->index(1, 0).flags().testFlag(Qt::ItemIsEnabled));
+        QVERIFY(enemy->model()->index(1, 0).flags().testFlag(Qt::ItemIsEnabled));
+        enemy->setCurrentIndex(1);
+        QVERIFY(page.findChild<QLabel*>(QStringLiteral("standaloneBossNote"))->isVisible());
+        QVERIFY(scaling->isVisible() && scaling->isEnabled());
+        QVERIFY(scaling->isChecked());
+        QTest::mouseClick(scaling, Qt::LeftButton, Qt::NoModifier,
+                          QPoint(10, scaling->height() / 2));
+        QVERIFY(!scaling->isChecked());
         seed->setText(QStringLiteral("standalone-test-seed"));
         dlc->setChecked(false);
         QTest::mouseClick(randomize, Qt::LeftButton);
@@ -354,11 +574,19 @@ class ApUiTest final : public QObject {
         QCOMPARE(params.value(QStringLiteral("seed")).toString(), QStringLiteral("standalone-test-seed"));
         QCOMPARE(params.value(QStringLiteral("include_dlc")).toBool(), false);
         QCOMPARE(params.value(QStringLiteral("randomize_enemies")).toBool(), true);
+        QCOMPARE(params.value(QStringLiteral("expanded_coverage")).toBool(), true);
+        QCOMPARE(params.value(QStringLiteral("normalize_scaling")).toBool(), false);
         QVERIFY(!params.contains(QStringLiteral("server")));
         QVERIFY(!params.contains(QStringLiteral("player_name")));
         QTest::mouseClick(launch, Qt::LeftButton);
         QVERIFY(m_coordinator->GameStarted());
         QCOMPARE(m_emulator->startCalls, 1);
+        QFile capturedVerify(m_capturedVerify);
+        QVERIFY(capturedVerify.open(QIODevice::ReadOnly));
+        const QJsonObject verifyParams = QJsonDocument::fromJson(capturedVerify.readAll())
+                                             .object().value(QStringLiteral("params")).toObject();
+        QCOMPARE(verifyParams.value(QStringLiteral("expanded_coverage")).toBool(), true);
+        QCOMPARE(verifyParams.value(QStringLiteral("normalize_scaling")).toBool(), false);
         QFile ops(m_opLog);
         QVERIFY(ops.open(QIODevice::ReadOnly));
         const QByteArray log = ops.readAll();
@@ -532,15 +760,26 @@ class ApUiTest final : public QObject {
     }
 
     void savedChoicesRestoreWithoutAuthorityOrPassword() {
+        const QString settingsPath = ApBackend::DefaultStateRoot() +
+                                     QStringLiteral("/ui-settings.json");
+        QVERIFY(QDir().mkpath(QFileInfo(settingsPath).absolutePath()));
+        QFile legacy(settingsPath);
+        QVERIFY(legacy.open(QIODevice::WriteOnly));
+        legacy.write(R"({"normalize_scaling":false,"preserve_locomotion":true,"shuffle_bosses":false})");
+        legacy.close();
         {
             ApPage page(m_coordinator.get());
             auto* mode = page.findChild<QComboBox*>(QStringLiteral("playMode"));
             auto* enemy = page.findChild<QComboBox*>(QStringLiteral("enemyMode"));
+            auto* scaling = page.findChild<QCheckBox*>(QStringLiteral("apEnemyNormalizeStats"));
+            QVERIFY(scaling->isChecked()); // Old default-off setting is not carried forward.
             auto* apSeed = page.findChild<QLineEdit*>(QStringLiteral("apSeedPath"));
             apSeed->setText(QStringLiteral("C:/fixture/ap-seed.zip"));
-            enemy->setCurrentIndex(1);
-            mode->setCurrentIndex(1);
+            scaling->setChecked(false);
             enemy->setCurrentIndex(2);
+            mode->setCurrentIndex(1);
+            enemy->setCurrentIndex(1);
+            QVERIFY(scaling->isChecked());
             page.findChild<QLineEdit*>(QStringLiteral("standaloneSeed"))
                 ->setText(QStringLiteral("remembered-seed"));
             page.findChild<QCheckBox*>(QStringLiteral("includeDlc"))->setChecked(false);
@@ -550,23 +789,28 @@ class ApUiTest final : public QObject {
                 }
             }
         }
-        const QString settingsPath = ApBackend::DefaultStateRoot() +
-                                     QStringLiteral("/ui-settings.json");
         QFile settings(settingsPath);
         QVERIFY(settings.open(QIODevice::ReadOnly));
-        QVERIFY(!settings.readAll().contains("do-not-save-this"));
+        const QByteArray saved = settings.readAll();
+        QVERIFY(!saved.contains("do-not-save-this"));
+        QVERIFY(!saved.contains("preserve_locomotion"));
+        QVERIFY(!saved.contains("shuffle_bosses"));
+        QVERIFY(!saved.contains("\"normalize_scaling\""));
         ApPage restored(m_coordinator.get());
         auto* mode = restored.findChild<QComboBox*>(QStringLiteral("playMode"));
         auto* enemy = restored.findChild<QComboBox*>(QStringLiteral("enemyMode"));
+        auto* scaling = restored.findChild<QCheckBox*>(QStringLiteral("apEnemyNormalizeStats"));
         auto* launch = restored.findChild<QPushButton*>(QStringLiteral("apPlay"));
         QCOMPARE(mode->currentIndex(), 1);
-        QCOMPARE(enemy->currentIndex(), 2);
+        QCOMPARE(enemy->currentIndex(), 1);
+        QVERIFY(scaling->isChecked());
         QCOMPARE(restored.findChild<QLineEdit*>(QStringLiteral("standaloneSeed"))->text(),
                  QStringLiteral("remembered-seed"));
         QVERIFY(!restored.findChild<QCheckBox*>(QStringLiteral("includeDlc"))->isChecked());
         QVERIFY(launch->isEnabled()); // Can rebuild, but has no prepared authority.
         mode->setCurrentIndex(0);
-        QCOMPARE(enemy->currentIndex(), 1);
+        QCOMPARE(enemy->currentIndex(), 2);
+        QVERIFY(!scaling->isChecked());
         QCOMPARE(restored.findChild<QLineEdit*>(QStringLiteral("apSeedPath"))->text(),
                  QStringLiteral("C:/fixture/ap-seed.zip"));
     }
@@ -639,6 +883,8 @@ class ApUiTest final : public QObject {
   private:
     QString m_previousCwd;
     QString m_capturedPrepare;
+    QString m_capturedPrepares;
+    QString m_capturedVerify;
     QString m_opLog;
     std::unique_ptr<QTemporaryDir> m_scratch;
     QString m_gameRoot;

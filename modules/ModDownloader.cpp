@@ -33,6 +33,8 @@
 #include <QWebEngineProfile>
 #include <QWebEngineView>
 #else
+#include <QDesktopServices>
+#include <QLabel>
 #include <QQuickItem>
 #include <QQuickView>
 #include <QtWebView>
@@ -347,12 +349,27 @@ void ModDownloader::GetApiKey() {
 #else
                 webView->setSource(QUrl("qrc:/web.qml"));
                 QObject* rootObject = webView->rootObject();
-                QObject* webViewObject = rootObject->findChild<QObject*>("currentWebView");
-                
-                webView->setResizeMode(QQuickView::SizeRootObjectToView);
-                webViewObject->setProperty("url", link);
-                layout->addWidget(QWidget::createWindowContainer(webView));
-                authorizationDialog->resize(1280, 720);
+                QObject* webViewObject = rootObject
+                    ? rootObject->findChild<QObject*>("currentWebView") : nullptr;
+                if (webViewObject) {
+                    webView->setResizeMode(QQuickView::SizeRootObjectToView);
+                    webViewObject->setProperty("url", link);
+                    layout->addWidget(QWidget::createWindowContainer(webView));
+                    authorizationDialog->resize(1280, 720);
+                } else {
+                    // A packaged Qt installation may lack the QML WebView
+                    // module. The SSO socket can still receive authorization
+                    // from the player's normal browser.
+                    if (!QDesktopServices::openUrl(QUrl(link))) {
+                        QMessageBox::warning(this, "Authorization unavailable",
+                            "Could not open Nexus Mods in your browser.");
+                        QTimer::singleShot(0, authorizationDialog,
+                                           [this]() { authorizationDialog->reject(); });
+                        return;
+                    }
+                    layout->addWidget(new QLabel(
+                        "Waiting for authorization in your browser", authorizationDialog));
+                }
 #endif
                 authorizationDialog->setLayout(layout);
                 authorizationDialog->show();
@@ -887,7 +904,20 @@ void ModDownloader::DownloadFileRegular(int fileId, int ModId, QString modName,
     QString fileUrl = "https://www.nexusmods.com/bloodborne/mods/" + QString::number(ModId) +
                       "?tab=files&file_id=" + QString::number(fileId);
     QObject* rootObject = webView->rootObject();
-    QObject* webViewObject = rootObject->findChild<QObject*>("currentWebView");
+    QObject* webViewObject = rootObject
+        ? rootObject->findChild<QObject*>("currentWebView") : nullptr;
+    if (!webViewObject) {
+        delete webView;
+        delete downloadDialog;
+        if (QDesktopServices::openUrl(QUrl(fileUrl))) {
+            QMessageBox::information(this, "Open in browser",
+                "The embedded browser is unavailable. The Nexus Mods file page is open in your browser; download and install the archive from there.");
+        } else {
+            QMessageBox::warning(this, "Download unavailable",
+                "The embedded browser is unavailable and the Nexus Mods file page could not be opened.");
+        }
+        return;
+    }
     webViewObject->setProperty("url", fileUrl);
 
     // Check url every .5 second (lol)

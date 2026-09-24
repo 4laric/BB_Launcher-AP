@@ -253,6 +253,7 @@ bool ApCoordinator::InspectSeed(const QString& seedPath, const QString& playerNa
 bool ApCoordinator::Prepare(const ApPlayRequest& request, Prepared* prepared,
                             QString* error) {
     emit StageChanged(tr("Preparing your seed"));
+    m_lastErrorCode.clear();
     if (prepared != nullptr) *prepared = Prepared{};
     if (!EnsureBackend(error)) {
         return false;
@@ -324,6 +325,7 @@ bool ApCoordinator::Prepare(const ApPlayRequest& request, Prepared* prepared,
 #endif
     ApResponse response = m_backend->Call(QStringLiteral("prepare_play"), params, 600000);
     if (!response.ok) {
+        m_lastErrorCode = response.error.code;
         if (error != nullptr) {
             *error = response.error.detail;
         }
@@ -374,11 +376,17 @@ bool ApCoordinator::PrepareStandalone(const StandalonePlayRequest& request,
         if (error != nullptr) *error = tr("Enter a seed first.");
         return false;
     }
+    if (request.expandedCoverage && !request.randomizeEnemies) {
+        if (error != nullptr) *error = tr("Expanded coverage requires enemy randomization.");
+        return false;
+    }
     if (!EnsureBackend(error)) return false;
     const QJsonObject params{
         {QStringLiteral("seed"), request.seed.trimmed()},
         {QStringLiteral("include_dlc"), request.includeDlc},
         {QStringLiteral("randomize_enemies"), request.randomizeEnemies},
+        {QStringLiteral("expanded_coverage"), request.expandedCoverage},
+        {QStringLiteral("normalize_scaling"), request.normalizeScaling},
         {QStringLiteral("game_root"), request.gameRoot},
         {QStringLiteral("mods_root"), m_modRoots.inactive},
         {QStringLiteral("state_root"), m_stateRoot},
@@ -397,6 +405,8 @@ bool ApCoordinator::PrepareStandalone(const StandalonePlayRequest& request,
     result.receiptPath = response.result.value(QStringLiteral("receipt_path")).toString();
     result.includeDlc = request.includeDlc;
     result.randomizeEnemies = request.randomizeEnemies;
+    result.expandedCoverage = request.expandedCoverage;
+    result.normalizeScaling = request.normalizeScaling;
     result.seed = response.result.value(QStringLiteral("seed")).toString();
     result.title = response.result.value(QStringLiteral("display_name")).toString();
     if (result.playId.isEmpty() || result.packageName.isEmpty() ||
@@ -451,7 +461,9 @@ bool ApCoordinator::Activate(const Prepared& prepared, bool allowDisableConflict
                         {QStringLiteral("game_root"), m_gameRoot},
                         {QStringLiteral("mods_root"), m_modRoots.inactive},
                         {QStringLiteral("include_dlc"), prepared.includeDlc},
-                        {QStringLiteral("randomize_enemies"), prepared.randomizeEnemies}}, 120000);
+                        {QStringLiteral("randomize_enemies"), prepared.randomizeEnemies},
+                        {QStringLiteral("expanded_coverage"), prepared.expandedCoverage},
+                        {QStringLiteral("normalize_scaling"), prepared.normalizeScaling}}, 120000);
         if (!verified.ok) {
             if (error != nullptr) *error = verified.error.detail;
             return false;
@@ -463,9 +475,14 @@ bool ApCoordinator::Activate(const Prepared& prepared, bool allowDisableConflict
         }
     }
     // A previous run can still own the overlay after another inactive seed
-    // has been prepared. Remove only the exact package this coordinator
-    // activated, after verifying the new receipt and before its activation.
-    if (!m_activePackageName.isEmpty() && m_activePackageName != prepared.packageName) {
+    // has been prepared. If an older AP installation owns the overlay,
+    // deactivate this coordinator's exact package even when it has the same
+    // name as the prepared one, so its backed-up bytes are restored first.
+    const QString legacyOwnerMarker = QFileInfo(m_modRoots.overlay).absolutePath() +
+                                      QStringLiteral("/.bb-ap-owner.json");
+    const bool legacyOwnerPresent = QFileInfo::exists(legacyOwnerMarker);
+    if (!m_activePackageName.isEmpty() &&
+        (m_activePackageName != prepared.packageName || legacyOwnerPresent)) {
         if (!m_sessionId.isEmpty() && !GameClosed(error)) return false;
         modservice::Plan down;
         const modservice::Result will = m_mods->PlanDeactivate(
@@ -481,6 +498,36 @@ bool ApCoordinator::Activate(const Prepared& prepared, bool allowDisableConflict
         }
         ClearManagedPackage();
     }
+    // The backend verifies and retires an older AP-owned overlay before
+    // ModService plans a new activation. Qt never edits its ownership marker.
+    if (!m_sessionId.isEmpty() && !GameClosed(error)) return false;
+    emit StageChanged(tr("Checking previous game setup"));
+    const ApResponse migrated = m_backend->Call(
+        QStringLiteral("migrate_legacy_overlay"),
+        QJsonObject{{QStringLiteral("game_root"), m_gameRoot}}, 120000);
+    if (!migrated.ok) {
+        m_lastErrorCode = migrated.error.code;
+        if (error != nullptr) *error = migrated.error.detail;
+        return false;
+    }
+    const QString migrationStatus = migrated.result.value(QStringLiteral("status")).toString();
+    if (migrationStatus != QStringLiteral("migrated") &&
+        migrationStatus != QStringLiteral("already_migrated") &&
+        migrationStatus != QStringLiteral("no_legacy")) {
+        if (error != nullptr) *error = tr("The previous game setup could not be verified. No new mod was activated.");
+        return false;
+    }
+    const bool retiredLegacy = migrationStatus != QStringLiteral("no_legacy");
+    if (retiredLegacy) {
+        emit StageChanged(tr("Previous Archipelago mod removed; preparing the new mod."));
+    }
+    const auto activationError = [this, error, retiredLegacy](const QString& detail) {
+        if (error == nullptr) return;
+        *error = retiredLegacy
+            ? tr("The previous Archipelago mod was removed and its backup was kept. "
+                 "The new mod was not activated: %1").arg(detail)
+            : detail;
+    };
     // Resolve the prepared package by exact name in the inactive mods;
     // a display title is never authorization, ModService validates.
     QString package = prepared.packageName;
@@ -492,10 +539,8 @@ bool ApCoordinator::Activate(const Prepared& prepared, bool allowDisableConflict
         }
     }
     if (!found) {
-        if (error != nullptr) {
-            *error = tr("The prepared randomizer package is not in the inactive mods. "
-                        "Prepare again.");
-        }
+        activationError(tr("The prepared randomizer package is not in the inactive mods. "
+                           "Prepare again."));
         return false;
     }
     modservice::Plan plan;
@@ -507,14 +552,12 @@ bool ApCoordinator::Activate(const Prepared& prepared, bool allowDisableConflict
             *wasConflict = true;
         }
         if (!allowDisableConflicts) {
-            if (error != nullptr) {
-                QString names;
-                for (const std::string& entry : plan.conflictingMods) {
-                    const QString text = QString::fromStdString(entry);
-                    names += text.section(QChar(','), 1, 1).trimmed() + QStringLiteral(" ");
-                }
-                *error = tr("This mod conflicts with the randomizer: %1").arg(names.trimmed());
+            QString names;
+            for (const std::string& entry : plan.conflictingMods) {
+                const QString text = QString::fromStdString(entry);
+                names += text.section(QChar(','), 1, 1).trimmed() + QStringLiteral(" ");
             }
+            activationError(tr("This mod conflicts with the randomizer: %1").arg(names.trimmed()));
             return false;
         }
         plan.conflictOverride = true;
@@ -532,16 +575,12 @@ bool ApCoordinator::Activate(const Prepared& prepared, bool allowDisableConflict
             modservice::Plan down;
             modservice::Result will = m_mods->PlanDeactivate(it->toStdString(), down);
             if (!will.ok) {
-                if (error != nullptr) {
-                    *error = QString::fromStdString(will.detail);
-                }
+                activationError(QString::fromStdString(will.detail));
                 return false;
             }
             modservice::Result did = m_mods->Commit(down);
             if (!did.ok) {
-                if (error != nullptr) {
-                    *error = QString::fromStdString(did.detail);
-                }
+                activationError(QString::fromStdString(did.detail));
                 return false;
             }
         }
@@ -550,27 +589,24 @@ bool ApCoordinator::Activate(const Prepared& prepared, bool allowDisableConflict
         // so discard it and plan against the now-restored overlay.
         planned = m_mods->PlanActivate(package.toStdString(), plan);
         if (!planned.ok) {
-            if (error != nullptr) {
-                *error = QString::fromStdString(planned.detail);
-            }
+            activationError(QString::fromStdString(planned.detail));
             return false;
         }
         plan.conflictOverride = true;
     } else if (!planned.ok) {
-        if (error != nullptr) {
-            *error = QString::fromStdString(planned.detail);
-        }
+        activationError(QString::fromStdString(planned.detail));
         return false;
     }
     // Record the exact owner before the overlay commit. On an interrupted
     // commit, Configure checks ModService's active ledger before restoring it.
-    if (!SaveManagedPackage(package, prepared.mode, error)) return false;
+    if (!SaveManagedPackage(package, prepared.mode, error)) {
+        if (error != nullptr) activationError(*error);
+        return false;
+    }
     modservice::Result done = m_mods->Commit(plan);
     if (!done.ok) {
         ClearManagedPackage();
-        if (error != nullptr) {
-            *error = QString::fromStdString(done.detail);
-        }
+        activationError(QString::fromStdString(done.detail));
         return false;
     }
     m_activePackageName = package;
