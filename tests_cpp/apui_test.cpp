@@ -479,7 +479,10 @@ class ApUiTest final : public QObject {
 
         m_coordinator.reset();
         m_coordinator = std::make_unique<ApCoordinator>(m_emulator.get());
-        QVERIFY2(configure(), qPrintable(error));
+        QVERIFY2(m_coordinator->Configure(m_gameRoot, backendDir, stateRoot,
+                                          &error, {}, false), qPrintable(error));
+        QVERIFY(m_coordinator->backend() == nullptr);
+        QVERIFY(!m_coordinator->Preflight(QStringLiteral("start-game")).isEmpty());
         StandalonePlayRequest standalone{m_gameRoot, QStringLiteral("new-mode"), true, true};
         QVERIFY2(m_coordinator->PrepareStandalone(standalone, &prepared, &error),
                  qPrintable(error));
@@ -506,6 +509,26 @@ class ApUiTest final : public QObject {
             "/BBLauncher/Mods-Active (DO NOT DELETE)/Unrelated")).exists());
         QVERIFY(!QDir(QDir::currentPath() + QStringLiteral(
             "/BBLauncher/Mods-Active (DO NOT DELETE)/Archipelago-Fixture")).exists());
+    }
+
+    void failedStartupRecoveryBlocksRegularGameStart() {
+        const QString stateRoot = ApBackend::DefaultStateRoot();
+        const QString journalDir = stateRoot +
+            QStringLiteral("/integrated/cxx-journal");
+        QVERIFY(QDir().mkpath(journalDir));
+        QFile journal(journalDir + QStringLiteral("/modservice.jsonl"));
+        QVERIFY(journal.open(QIODevice::WriteOnly));
+        journal.write("{\"kind\":\"plan\"\n");
+        journal.close();
+        QString error;
+        QVERIFY(!m_coordinator->Configure(
+            m_gameRoot, QCoreApplication::applicationDirPath() +
+                QStringLiteral("/ap_backend"), stateRoot, &error, {}, false));
+        QVERIFY(error.contains(QStringLiteral("malformed")));
+        QString refused;
+        QVERIFY(!m_emulator->Check(QStringLiteral("start-game"), &refused));
+        QVERIFY(refused.contains(QStringLiteral("recovery")));
+        QVERIFY(m_coordinator->backend() == nullptr);
     }
 
     void savedChoicesRestoreWithoutAuthorityOrPassword() {

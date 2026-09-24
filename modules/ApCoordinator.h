@@ -75,7 +75,7 @@ class ApCoordinator : public QObject {
     // launcher state root for plays/arms/journal/supervisor.
     bool Configure(const QString& gameRoot, const QString& backendDir,
                    const QString& stateRoot, QString* error,
-                   const ApModRoots& roots = {});
+                   const ApModRoots& roots = {}, bool startBackend = true);
 
     bool InspectSeed(const QString& seedPath, const QString& playerName,
                      ApResponse* response, QString* error);
@@ -166,4 +166,6 @@ class ApCoordinator : public QObject {
     QString m_lastErrorCode;
     bool m_playing = false;
     bool m_ownStart = false;
+    bool m_recoveryFailed = false;
+    QString m_recoveryError;
 };

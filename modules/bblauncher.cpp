@@ -147,6 +147,22 @@ BBLauncher::BBLauncher(bool noGUI, bool noInstanceRunning, QWidget* parent)
         ui->ExeLabel->setText(installQString);
     }
 
+    // Restore the exact managed randomizer package before any of the main
+    // launch routes become usable. This only recovers ModService state and
+    // installs the emulator preflight; backend startup remains on demand.
+    if (!Common::installPath.empty() &&
+        std::filesystem::exists(Common::installPath)) {
+        QString gameRoot;
+        Common::PathToQString(gameRoot, Common::installPath);
+        QString recoveryError;
+        if (!m_ap_coordinator->Configure(
+                gameRoot,
+                QCoreApplication::applicationDirPath() + QStringLiteral("/ap_backend"),
+                ApBackend::DefaultStateRoot(), &recoveryError, {}, false)) {
+            LogError(recoveryError.toStdString());
+        }
+    }
+
     QString shadLabelString;
     Common::PathToQString(shadLabelString, Common::shadPs4Executable);
     ui->ShadLabel->setText(shadLabelString);

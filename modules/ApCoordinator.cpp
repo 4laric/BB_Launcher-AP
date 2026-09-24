@@ -37,7 +37,7 @@ ApCoordinator::ApCoordinator(EmulatorService* emulator, QObject* parent)
 
 bool ApCoordinator::Configure(const QString& gameRoot, const QString& backendDir,
                               const QString& stateRoot, QString* error,
-                              const ApModRoots& requestedRoots) {
+                              const ApModRoots& requestedRoots, bool startBackend) {
     ApModRoots roots = requestedRoots;
     const QString installName = InstallNameFor(gameRoot);
     const QFileInfo gameInfo(gameRoot);
@@ -99,38 +99,52 @@ bool ApCoordinator::Configure(const QString& gameRoot, const QString& backendDir
     // unresolved, so recovery cannot be limited to service construction.
     const modservice::Result recovered = m_mods->Recover();
     if (!recovered.ok) {
+        m_recoveryFailed = true;
+        m_recoveryError = QString::fromStdString(recovered.detail);
         if (error != nullptr) {
-            *error = QString::fromStdString(recovered.detail);
+            *error = m_recoveryError;
+        }
+        if (m_emu != nullptr) {
+            m_emu->setPreflightHandler(
+                [this](const QString& action) { return Preflight(action); });
         }
         return false;
     }
+    m_recoveryFailed = false;
+    m_recoveryError.clear();
     if (!sameConfiguration) RestoreManagedPackage();
     if (m_emu != nullptr) {
         m_emu->setPreflightHandler(
             [this](const QString& action) { return Preflight(action); });
     }
-    return EnsureBackend(error);
+    return !startBackend || EnsureBackend(error);
 }
 
 QString ApCoordinator::Preflight(const QString& action) {
+    if (m_recoveryFailed) {
+        return tr("Randomizer mod recovery needs attention before starting the game: %1")
+            .arg(m_recoveryError);
+    }
     if (m_ownStart) {
         return {};
     }
+    const bool starting = action == QStringLiteral("start") ||
+                          action == QStringLiteral("restart") ||
+                          action == QStringLiteral("start-game");
     if (m_playing) {
-        if (action == QStringLiteral("start") || action == QStringLiteral("restart")) {
+        if (starting) {
             return tr("An Archipelago session is already running. "
                       "Use Return to game instead of starting a second copy.");
         }
         return {};
     }
-    if (!m_armId.isEmpty()) {
+    if (!m_armId.isEmpty() && starting) {
         // Armed but not yet playing: only the coordinator's own start may
         // launch the game, so activation cannot drift under us.
         return tr("An Archipelago session is armed and starting. "
                   "Please wait for the game to launch.");
     }
-    if (!m_activePackageName.isEmpty() &&
-        (action == QStringLiteral("start") || action == QStringLiteral("restart"))) {
+    if (!m_activePackageName.isEmpty() && starting) {
         return tr("A randomizer package is active. Use Randomizer Launch or Regular play.");
     }
     return {};
