@@ -90,7 +90,7 @@ BBLauncher::BBLauncher(bool noGUI, bool noInstanceRunning, QWidget* parent)
     ui->IconButtonsLayout->addLayout(
         createIconTextButtonLayout(":mod_manager.png", "Mod Manager", modManagerButton));
     ui->IconButtonsLayout->addLayout(
-        createIconTextButtonLayout(":BBIcon.png", "Archipelago", archipelagoButton));
+        createIconTextButtonLayout(":BBIcon.png", "Randomizer", archipelagoButton));
     ui->IconButtonsLayout->addLayout(
         createIconTextButtonLayout(":downloader.png", "Mod Downloader", modDownloaderButton));
     ui->IconButtonsLayout->addLayout(
