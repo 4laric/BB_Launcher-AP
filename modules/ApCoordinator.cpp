@@ -6,6 +6,9 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QFile>
+#include <QJsonDocument>
+#include <QSaveFile>
 #include <iterator>
 
 #include "ApFork.h"
@@ -22,6 +25,10 @@ QString ModsRootFor(const QString& gameRoot) {
 QString InstallNameFor(const QString& gameRoot) {
     const QFileInfo info(gameRoot);
     return info.fileName().isEmpty() ? QStringLiteral("CUSA03173") : info.fileName();
+}
+
+QString AbsoluteClean(const QString& path) {
+    return QDir::cleanPath(QFileInfo(path).absoluteFilePath());
 }
 } // namespace
 
@@ -55,7 +62,8 @@ bool ApCoordinator::Configure(const QString& gameRoot, const QString& backendDir
                                    roots.overlay == m_modRoots.overlay &&
                                    roots.backups == m_modRoots.backups;
     if (!m_gameRoot.isEmpty() && !sameConfiguration &&
-        (m_playing || !m_armId.isEmpty() || !m_sessionId.isEmpty())) {
+        (m_playing || !m_armId.isEmpty() || !m_sessionId.isEmpty() ||
+         !m_activePackageName.isEmpty())) {
         if (error != nullptr) {
             *error = tr("Stop the current Archipelago session before changing its configuration.");
         }
@@ -96,6 +104,7 @@ bool ApCoordinator::Configure(const QString& gameRoot, const QString& backendDir
         }
         return false;
     }
+    if (!sameConfiguration) RestoreManagedPackage();
     if (m_emu != nullptr) {
         m_emu->setPreflightHandler(
             [this](const QString& action) { return Preflight(action); });
@@ -120,6 +129,10 @@ QString ApCoordinator::Preflight(const QString& action) {
         return tr("An Archipelago session is armed and starting. "
                   "Please wait for the game to launch.");
     }
+    if (!m_activePackageName.isEmpty() &&
+        (action == QStringLiteral("start") || action == QStringLiteral("restart"))) {
+        return tr("A randomizer package is active. Use Randomizer Launch or Regular play.");
+    }
     return {};
 }
 
@@ -131,6 +144,68 @@ bool ApCoordinator::EnsureBackend(QString* error) {
         m_backend = std::make_unique<ApBackend>(this);
     }
     return m_backend->Start(m_stateRoot, error);
+}
+
+bool ApCoordinator::SaveManagedPackage(const QString& package,
+                                       Prepared::Mode mode, QString* error) {
+    const QString path = m_stateRoot + QStringLiteral("/integrated/cxx-owned-active.json");
+    if (!QDir().mkpath(QFileInfo(path).absolutePath())) {
+        if (error) *error = tr("Could not save the active package identity.");
+        return false;
+    }
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) {
+        if (error) *error = tr("Could not save the active package identity: %1")
+                                 .arg(file.errorString());
+        return false;
+    }
+    const QJsonObject record{
+        {QStringLiteral("schema"), 1},
+        {QStringLiteral("game_root"), AbsoluteClean(m_gameRoot)},
+        {QStringLiteral("inactive_root"), AbsoluteClean(m_modRoots.inactive)},
+        {QStringLiteral("active_root"), AbsoluteClean(m_modRoots.active)},
+        {QStringLiteral("overlay_root"), AbsoluteClean(m_modRoots.overlay)},
+        {QStringLiteral("package_name"), package},
+        {QStringLiteral("mode"), mode == Prepared::Mode::Standalone
+                                     ? QStringLiteral("standalone") : QStringLiteral("ap")},
+    };
+    file.write(QJsonDocument(record).toJson(QJsonDocument::Compact));
+    if (!file.commit()) {
+        if (error) *error = tr("Could not save the active package identity: %1")
+                                 .arg(file.errorString());
+        return false;
+    }
+    return true;
+}
+
+void ApCoordinator::RestoreManagedPackage() {
+    QFile file(m_stateRoot + QStringLiteral("/integrated/cxx-owned-active.json"));
+    if (!file.open(QIODevice::ReadOnly)) return;
+    const QJsonObject record = QJsonDocument::fromJson(file.readAll()).object();
+    if (record.value(QStringLiteral("schema")).toInt() != 1 ||
+        record.value(QStringLiteral("game_root")).toString() != AbsoluteClean(m_gameRoot) ||
+        record.value(QStringLiteral("inactive_root")).toString() != AbsoluteClean(m_modRoots.inactive) ||
+        record.value(QStringLiteral("active_root")).toString() != AbsoluteClean(m_modRoots.active) ||
+        record.value(QStringLiteral("overlay_root")).toString() != AbsoluteClean(m_modRoots.overlay)) return;
+    const QString package = record.value(QStringLiteral("package_name")).toString();
+    const QString mode = record.value(QStringLiteral("mode")).toString();
+    if (!((mode == QStringLiteral("ap") &&
+           package.startsWith(QStringLiteral("Archipelago-"))) ||
+          (mode == QStringLiteral("standalone") &&
+           package.startsWith(QStringLiteral("Bloodborne-Standalone-"))))) return;
+    for (const std::string& active : m_mods->ActiveMods()) {
+        if (QString::fromStdString(active) == package) {
+            m_activePackageName = package;
+            m_mode = mode == QStringLiteral("standalone")
+                         ? Prepared::Mode::Standalone : Prepared::Mode::Archipelago;
+            return;
+        }
+    }
+}
+
+void ApCoordinator::ClearManagedPackage() {
+    QFile::remove(m_stateRoot + QStringLiteral("/integrated/cxx-owned-active.json"));
+    m_activePackageName.clear();
 }
 
 void ApCoordinator::RequestCancel() {
@@ -164,6 +239,7 @@ bool ApCoordinator::InspectSeed(const QString& seedPath, const QString& playerNa
 bool ApCoordinator::Prepare(const ApPlayRequest& request, Prepared* prepared,
                             QString* error) {
     emit StageChanged(tr("Preparing your seed"));
+    if (prepared != nullptr) *prepared = Prepared{};
     if (!EnsureBackend(error)) {
         return false;
     }
@@ -197,7 +273,7 @@ bool ApCoordinator::Prepare(const ApPlayRequest& request, Prepared* prepared,
 #endif
     QJsonObject params{
         {QStringLiteral("game_root"), request.gameRoot},
-        {QStringLiteral("mods_root"), ModsRootFor(request.gameRoot)},
+        {QStringLiteral("mods_root"), m_modRoots.inactive},
         {QStringLiteral("seed_path"), request.seedPath},
         {QStringLiteral("player_name"), player},
         {QStringLiteral("server"), server},
@@ -240,6 +316,7 @@ bool ApCoordinator::Prepare(const ApPlayRequest& request, Prepared* prepared,
         return false;
     }
     m_playId = response.result.value(QStringLiteral("play_id")).toString();
+    m_mode = Prepared::Mode::Archipelago;
     m_packageName = response.result.value(QStringLiteral("package_name")).toString();
     const QJsonObject display = response.result.value(QStringLiteral("display")).toObject();
     if (prepared != nullptr) {
@@ -276,6 +353,52 @@ bool ApCoordinator::Prepare(const ApPlayRequest& request, Prepared* prepared,
     return true;
 }
 
+bool ApCoordinator::PrepareStandalone(const StandalonePlayRequest& request,
+                                      Prepared* prepared, QString* error) {
+    emit StageChanged(tr("Randomizing your game"));
+    if (request.seed.trimmed().isEmpty()) {
+        if (error != nullptr) *error = tr("Enter a seed first.");
+        return false;
+    }
+    if (!EnsureBackend(error)) return false;
+    const QJsonObject params{
+        {QStringLiteral("seed"), request.seed.trimmed()},
+        {QStringLiteral("include_dlc"), request.includeDlc},
+        {QStringLiteral("randomize_enemies"), request.randomizeEnemies},
+        {QStringLiteral("game_root"), request.gameRoot},
+        {QStringLiteral("mods_root"), m_modRoots.inactive},
+        {QStringLiteral("state_root"), m_stateRoot},
+    };
+    const ApResponse response = m_backend->Call(QStringLiteral("prepare_standalone"),
+                                                params, 600000);
+    if (!response.ok) {
+        if (error != nullptr) *error = response.error.detail;
+        return false;
+    }
+    Prepared result;
+    result.mode = Prepared::Mode::Standalone;
+    result.playId = response.result.value(QStringLiteral("receipt_id")).toString();
+    result.packageName = response.result.value(QStringLiteral("package_name")).toString();
+    result.packagePath = response.result.value(QStringLiteral("package_path")).toString();
+    result.receiptPath = response.result.value(QStringLiteral("receipt_path")).toString();
+    result.includeDlc = request.includeDlc;
+    result.randomizeEnemies = request.randomizeEnemies;
+    result.seed = response.result.value(QStringLiteral("seed")).toString();
+    result.title = response.result.value(QStringLiteral("display_name")).toString();
+    if (result.playId.isEmpty() || result.packageName.isEmpty() ||
+        result.packagePath.isEmpty() || result.receiptPath.isEmpty()) {
+        if (error != nullptr) *error = tr("The standalone backend returned an incomplete receipt.");
+        return false;
+    }
+    m_mode = Prepared::Mode::Standalone;
+    m_playId = result.playId;
+    m_packageName = result.packageName;
+    m_title = result.title;
+    m_playing = false;
+    if (prepared != nullptr) *prepared = result;
+    return true;
+}
+
 bool ApCoordinator::Activate(const Prepared& prepared, bool allowDisableConflicts,
                              bool* wasConflict, QString* error) {
     emit StageChanged(tr("Setting up your game"));
@@ -295,6 +418,55 @@ bool ApCoordinator::Activate(const Prepared& prepared, bool allowDisableConflict
         }
         return false;
     }
+    if (prepared.mode == Prepared::Mode::Standalone) {
+        const QString expected = QDir(m_modRoots.inactive).absoluteFilePath(prepared.packageName);
+        const QString actual = QFileInfo(prepared.packagePath).absoluteFilePath();
+        if (prepared.playId != m_playId || prepared.packageName != m_packageName ||
+            QDir::cleanPath(expected) != QDir::cleanPath(actual)) {
+            if (error != nullptr) *error = tr("The prepared package does not match this session. Randomize again.");
+            return false;
+        }
+        emit StageChanged(tr("Verifying the randomized package"));
+        const ApResponse verified = m_backend->Call(
+            QStringLiteral("verify_standalone"),
+            QJsonObject{{QStringLiteral("package_path"), prepared.packagePath},
+                        {QStringLiteral("receipt_path"), prepared.receiptPath},
+                        {QStringLiteral("receipt_id"), prepared.playId},
+                        {QStringLiteral("package_name"), prepared.packageName},
+                        {QStringLiteral("seed"), prepared.seed},
+                        {QStringLiteral("game_root"), m_gameRoot},
+                        {QStringLiteral("mods_root"), m_modRoots.inactive},
+                        {QStringLiteral("include_dlc"), prepared.includeDlc},
+                        {QStringLiteral("randomize_enemies"), prepared.randomizeEnemies}}, 120000);
+        if (!verified.ok) {
+            if (error != nullptr) *error = verified.error.detail;
+            return false;
+        }
+        if (verified.result.value(QStringLiteral("receipt_id")).toString() != prepared.playId ||
+            verified.result.value(QStringLiteral("package_name")).toString() != prepared.packageName) {
+            if (error != nullptr) *error = tr("The standalone receipt changed. Randomize again.");
+            return false;
+        }
+    }
+    // A previous run can still own the overlay after another inactive seed
+    // has been prepared. Remove only the exact package this coordinator
+    // activated, after verifying the new receipt and before its activation.
+    if (!m_activePackageName.isEmpty() && m_activePackageName != prepared.packageName) {
+        if (!m_sessionId.isEmpty() && !GameClosed(error)) return false;
+        modservice::Plan down;
+        const modservice::Result will = m_mods->PlanDeactivate(
+            m_activePackageName.toStdString(), down);
+        if (!will.ok) {
+            if (error) *error = QString::fromStdString(will.detail);
+            return false;
+        }
+        const modservice::Result did = m_mods->Commit(down);
+        if (!did.ok) {
+            if (error) *error = QString::fromStdString(did.detail);
+            return false;
+        }
+        ClearManagedPackage();
+    }
     // Resolve the prepared package by exact name in the inactive mods;
     // a display title is never authorization, ModService validates.
     QString package = prepared.packageName;
@@ -307,7 +479,7 @@ bool ApCoordinator::Activate(const Prepared& prepared, bool allowDisableConflict
     }
     if (!found) {
         if (error != nullptr) {
-            *error = tr("The prepared Archipelago package is not in the inactive mods. "
+            *error = tr("The prepared randomizer package is not in the inactive mods. "
                         "Prepare again.");
         }
         return false;
@@ -327,7 +499,7 @@ bool ApCoordinator::Activate(const Prepared& prepared, bool allowDisableConflict
                     const QString text = QString::fromStdString(entry);
                     names += text.section(QChar(','), 1, 1).trimmed() + QStringLiteral(" ");
                 }
-                *error = tr("This mod conflicts with Archipelago: %1").arg(names.trimmed());
+                *error = tr("This mod conflicts with the randomizer: %1").arg(names.trimmed());
             }
             return false;
         }
@@ -376,19 +548,24 @@ bool ApCoordinator::Activate(const Prepared& prepared, bool allowDisableConflict
         }
         return false;
     }
+    // Record the exact owner before the overlay commit. On an interrupted
+    // commit, Configure checks ModService's active ledger before restoring it.
+    if (!SaveManagedPackage(package, prepared.mode, error)) return false;
     modservice::Result done = m_mods->Commit(plan);
     if (!done.ok) {
+        ClearManagedPackage();
         if (error != nullptr) {
             *error = QString::fromStdString(done.detail);
         }
         return false;
     }
+    m_activePackageName = package;
     return true;
 }
 
 bool ApCoordinator::Arm(const Prepared& prepared, QString* error) {
     emit StageChanged(tr("Verifying your game setup"));
-    const QString modsRoot = ModsRootFor(m_gameRoot);
+    const QString modsRoot = m_modRoots.inactive;
     ApResponse response = m_backend->Call(
         QStringLiteral("verify_and_arm"),
         QJsonObject{{QStringLiteral("play_id"), prepared.playId},
@@ -441,6 +618,10 @@ bool ApCoordinator::StartGame(QString* error) {
         return false;
     }
     m_gameIdentity = identity;
+    if (m_mode == Prepared::Mode::Standalone) {
+        m_playing = true;
+        emit StageChanged(tr("Ready to play"));
+    }
     return true;
 }
 
@@ -449,7 +630,7 @@ bool ApCoordinator::Connect(QString* error) {
     const EmulatorProcessIdentity& identity = m_gameIdentity;
     QJsonObject params{{QStringLiteral("arm_id"), m_armId},
                        {QStringLiteral("game_root"), m_gameRoot},
-                       {QStringLiteral("mods_root"), ModsRootFor(m_gameRoot)}};
+                       {QStringLiteral("mods_root"), m_modRoots.inactive}};
     if (identity.valid) {
         params.insert(QStringLiteral("process"),
                       QJsonObject{{QStringLiteral("executable"), identity.executable},
@@ -512,6 +693,14 @@ bool ApCoordinator::GameClosed(QString* error) {
 }
 
 bool ApCoordinator::RefreshStatus(QString* stateOut, QString* error) {
+    if (m_mode == Prepared::Mode::Standalone) {
+        if (m_playId.isEmpty() || m_emu == nullptr) return false;
+        m_playing = m_emu->IsEmulatorRunning();
+        if (stateOut != nullptr) {
+            *stateOut = m_playing ? QStringLiteral("playing") : QStringLiteral("recoverable");
+        }
+        return true;
+    }
     if (!m_backend || !m_backend->IsRunning() || m_playId.isEmpty()) {
         return false;
     }
@@ -562,6 +751,11 @@ bool ApCoordinator::StopSessionAndDeactivate(QString* error) {
             return false;
         }
     }
+    if (!m_gameIdentity.valid && m_emu != nullptr && m_emu->IsEmulatorRunning() &&
+        !m_activePackageName.isEmpty()) {
+        if (error) *error = tr("Close the emulator before removing the active randomizer package.");
+        return false;
+    }
     if (m_gameIdentity.valid) {
         if (m_emu == nullptr || !m_gameIdentity.valid) {
             if (error != nullptr) {
@@ -577,7 +771,7 @@ bool ApCoordinator::StopSessionAndDeactivate(QString* error) {
         const auto activeMods = m_mods->ActiveMods();
         for (auto it = activeMods.rbegin(); it != activeMods.rend(); ++it) {
             const QString mod = QString::fromStdString(*it);
-            if (mod == m_packageName || mod.startsWith(QStringLiteral("Archipelago-"))) {
+            if (mod == m_activePackageName) {
                 modservice::Plan down;
                 modservice::Result will = m_mods->PlanDeactivate(*it, down);
                 if (!will.ok) {
@@ -596,6 +790,7 @@ bool ApCoordinator::StopSessionAndDeactivate(QString* error) {
             }
         }
     }
+    ClearManagedPackage();
     ResetSession();
     return true;
 }
@@ -606,6 +801,8 @@ void ApCoordinator::ResetSession() {
     m_sessionId.clear();
     m_title.clear();
     m_packageName.clear();
+    m_activePackageName.clear();
+    m_mode = Prepared::Mode::Archipelago;
     m_gameIdentity = EmulatorProcessIdentity{};
     m_playing = false;
 }

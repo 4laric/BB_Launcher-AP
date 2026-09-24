@@ -46,6 +46,13 @@ struct ApPlayRequest {
     } enemizer;
 };
 
+struct StandalonePlayRequest {
+    QString gameRoot;
+    QString seed;
+    bool includeDlc = true;
+    bool randomizeEnemies = true;
+};
+
 // Managed by the AP coordinator in copy mode. The default paths match the
 // regular Mod Manager; explicit roots also let embedders and tests isolate
 // an AP session without touching a user's install.
@@ -96,8 +103,13 @@ class ApCoordinator : public QObject {
 
     // Foreground step used by the AP page and headless flow alike.
     struct Prepared {
+        enum class Mode { Archipelago, Standalone } mode = Mode::Archipelago;
         QString playId;
         QString packageName;
+        QString packagePath;
+        QString receiptPath;
+        bool includeDlc = true;
+        bool randomizeEnemies = true;
         QString seed;
         QString slot;
         QString server;
@@ -106,6 +118,8 @@ class ApCoordinator : public QObject {
         QString enemySummary;
     };
     bool Prepare(const ApPlayRequest& request, Prepared* prepared, QString* error);
+    bool PrepareStandalone(const StandalonePlayRequest& request, Prepared* prepared,
+                           QString* error);
     // Activates the prepared package through ModService (copy). When a
     // named third-party mod conflicts and allowDisableConflicts is set,
     // conflicting mods are deactivated first via their exact reversible
@@ -130,6 +144,10 @@ class ApCoordinator : public QObject {
   private:
     bool EnsureBackend(QString* error);
     bool StopSessionAndDeactivate(QString* error);
+    bool SaveManagedPackage(const QString& package, Prepared::Mode mode,
+                            QString* error);
+    void RestoreManagedPackage();
+    void ClearManagedPackage();
     EmulatorService* m_emu = nullptr;
     std::unique_ptr<ApBackend> m_backend;
     std::unique_ptr<modservice::ModService> m_mods;
@@ -141,6 +159,8 @@ class ApCoordinator : public QObject {
     QString m_sessionId;
     QString m_title;
     QString m_packageName;
+    QString m_activePackageName;
+    Prepared::Mode m_mode = Prepared::Mode::Archipelago;
     ApModRoots m_modRoots;
     EmulatorProcessIdentity m_gameIdentity;
     QString m_lastErrorCode;

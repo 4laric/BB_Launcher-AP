@@ -12,38 +12,94 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QMessageBox>
+#include <QPalette>
+#include <QSaveFile>
+#include <QSignalBlocker>
+#include <QStandardItemModel>
 #include <QVBoxLayout>
 
 #include "ApFork.h"
 #include "modules/Common.h"
 
+namespace {
+void StyleDialog(QMessageBox* box) {
+    QPalette palette = box->palette();
+    if (palette.color(QPalette::Window).lightness() > 128) return;
+    palette.setColor(QPalette::Window, QColor(QStringLiteral("#20242b")));
+    palette.setColor(QPalette::WindowText, QColor(QStringLiteral("#f0f2f5")));
+    palette.setColor(QPalette::Button, QColor(QStringLiteral("#363c46")));
+    palette.setColor(QPalette::ButtonText, QColor(QStringLiteral("#f0f2f5")));
+    box->setPalette(palette);
+    box->setStyleSheet(QStringLiteral(
+        "QMessageBox { background: #20242b; color: #f0f2f5; } "
+        "QLabel { color: #f0f2f5; } "
+        "QPushButton { color: #f0f2f5; background: #363c46; border: 1px solid #66707e; "
+        "border-radius: 4px; padding: 5px 12px; min-width: 64px; } "
+        "QPushButton:focus { border: 2px solid #79b8ff; }"));
+}
+
+QMessageBox::StandardButton AskDark(QWidget* parent, const QString& title,
+                                    const QString& text) {
+    QMessageBox box(QMessageBox::Question, title, text,
+                    QMessageBox::Yes | QMessageBox::No, parent);
+    box.setDefaultButton(QMessageBox::No);
+    StyleDialog(&box);
+    return static_cast<QMessageBox::StandardButton>(box.exec());
+}
+} // namespace
+
 ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
     : QDialog(parent), m_coordinator(coordinator) {
-    setWindowTitle(tr("Archipelago"));
+    setWindowTitle(tr("Bloodborne randomizer"));
     setMinimumSize(620, 460);
 
     auto* layout = new QVBoxLayout(this);
 
-    auto* title = new QLabel(tr("<b>Bloodborne &mdash; Archipelago</b>"), this);
+    auto* title = new QLabel(tr("<b>Bloodborne randomizer</b>"), this);
     layout->addWidget(title);
 
-    m_setupLabel = new QLabel(tr("Game and emulator setup: checking&hellip;"), this);
+    m_setupLabel = new QLabel(tr("Game and emulator setup will be checked when you prepare."), this);
     m_setupLabel->setWordWrap(true);
     layout->addWidget(m_setupLabel);
 
     auto* form = new QFormLayout();
+    m_modeCombo = new QComboBox(this);
+    m_modeCombo->setObjectName(QStringLiteral("playMode"));
+    m_modeCombo->addItem(tr("Archipelago"));
+    m_modeCombo->addItem(tr("Standalone randomizer"));
+    form->addRow(tr("&Mode:"), m_modeCombo);
+    m_operationControls << m_modeCombo;
     m_seedEdit = new QLineEdit(this);
     m_seedEdit->setObjectName(QStringLiteral("apSeedPath"));
     m_seedEdit->setPlaceholderText(tr("AP seed file (.zip or .bbseed.json)"));
     m_seedEdit->setClearButtonEnabled(true);
-    auto* browse = new QPushButton(tr("Browse&hellip;"), this);
+    auto* browse = new QPushButton(tr("Browse…"), this);
     connect(browse, &QPushButton::clicked, this, &ApPage::BrowseSeed);
-    auto* seedRow = new QHBoxLayout();
+    m_apSeedRow = new QWidget(this);
+    auto* seedRow = new QHBoxLayout(m_apSeedRow);
+    seedRow->setContentsMargins(0, 0, 0, 0);
     seedRow->addWidget(m_seedEdit, 1);
     seedRow->addWidget(browse);
-    form->addRow(tr("&Seed:"), seedRow);
+    m_seedLabel = new QLabel(tr("&AP seed:"), this);
+    m_seedLabel->setBuddy(m_seedEdit);
+    form->addRow(m_seedLabel, m_apSeedRow);
     connect(m_seedEdit, &QLineEdit::editingFinished, this, &ApPage::SeedChanged);
     m_operationControls << m_seedEdit << browse;
+
+    m_standaloneSeedEdit = new QLineEdit(this);
+    m_standaloneSeedEdit->setObjectName(QStringLiteral("standaloneSeed"));
+    m_standaloneSeedEdit->setPlaceholderText(tr("Any text; use the same text to reproduce a run"));
+    m_standaloneSeedEdit->setClearButtonEnabled(true);
+    m_standaloneSeedEdit->setMaxLength(256);
+    m_standaloneSeedLabel = new QLabel(tr("&Randomizer seed:"), this);
+    m_standaloneSeedLabel->setBuddy(m_standaloneSeedEdit);
+    form->addRow(m_standaloneSeedLabel, m_standaloneSeedEdit);
+    m_operationControls << m_standaloneSeedEdit;
+    m_includeDlc = new QCheckBox(tr("Include DLC"), this);
+    m_includeDlc->setObjectName(QStringLiteral("includeDlc"));
+    m_includeDlc->setChecked(true);
+    form->addRow(QString(), m_includeDlc);
+    m_operationControls << m_includeDlc;
 
     m_playerLabel = new QLabel(tr("&Player:"), this);
     m_playerCombo = new QComboBox(this);
@@ -72,10 +128,12 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
     m_enemizerGroup = new QGroupBox(tr("Enemies"), this);
     m_enemizerGroup->setObjectName(QStringLiteral("apEnemyOptions"));
     auto* enemyLayout = new QVBoxLayout(m_enemizerGroup);
-    m_randomizeEnemies = new QCheckBox(tr("Randomize enemies"), m_enemizerGroup);
-    m_randomizeEnemies->setObjectName(QStringLiteral("apRandomizeEnemies"));
-    m_randomizeEnemies->setChecked(true);
-    enemyLayout->addWidget(m_randomizeEnemies);
+    m_enemyMode = new QComboBox(m_enemizerGroup);
+    m_enemyMode->setObjectName(QStringLiteral("enemyMode"));
+    m_enemyMode->addItem(tr("Reviewed randomization"));
+    m_enemyMode->addItem(tr("Expanded coverage (experimental)"));
+    m_enemyMode->addItem(tr("Vanilla enemies"));
+    enemyLayout->addWidget(m_enemyMode);
 
     m_expandedCoverage = new QGroupBox(tr("Expanded coverage (experimental)"), m_enemizerGroup);
     m_expandedCoverage->setObjectName(QStringLiteral("apExpandedEnemyCoverage"));
@@ -102,7 +160,7 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
     coverageLayout->addWidget(m_releaseContracts);
     coverageLayout->addWidget(m_releaseSpawns);
     coverageLayout->addWidget(m_releaseChara);
-    enemyLayout->addWidget(m_expandedCoverage);
+    m_expandedCoverage->hide();
 
     m_advancedEnemyOptions = new QToolButton(m_enemizerGroup);
     m_advancedEnemyOptions->setObjectName(QStringLiteral("apAdvancedEnemyOptions"));
@@ -117,30 +175,37 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
     m_advancedEnemyPanel->setObjectName(QStringLiteral("apAdvancedEnemyPanel"));
     auto* advancedLayout = new QVBoxLayout(m_advancedEnemyPanel);
     advancedLayout->setContentsMargins(12, 0, 0, 0);
-    auto* enemySeedRow = new QHBoxLayout();
-    enemySeedRow->addWidget(new QLabel(tr("Enemy seed:"), m_advancedEnemyPanel));
-    m_enemySeedEdit = new QLineEdit(m_advancedEnemyPanel);
+    m_enemySeedRow = new QWidget(m_enemizerGroup);
+    auto* enemySeedRow = new QHBoxLayout(m_enemySeedRow);
+    enemySeedRow->setContentsMargins(0, 0, 0, 0);
+    enemySeedRow->addWidget(new QLabel(tr("Enemy seed:"), m_enemySeedRow));
+    m_enemySeedEdit = new QLineEdit(m_enemySeedRow);
     m_enemySeedEdit->setObjectName(QStringLiteral("apEnemySeed"));
     m_enemySeedEdit->setPlaceholderText(tr("Optional; blank uses the AP seed"));
     enemySeedRow->addWidget(m_enemySeedEdit, 1);
-    advancedLayout->addLayout(enemySeedRow);
+    enemyLayout->insertWidget(1, m_enemySeedRow);
     m_allowTierMixing = new QCheckBox(tr("Allow replacements from any difficulty tier"),
                                        m_advancedEnemyPanel);
     m_allowTierMixing->setObjectName(QStringLiteral("apEnemyTierMixing"));
-    m_allowTierMixing->setChecked(true);
+    m_allowTierMixing->setChecked(false);
     m_preserveLocomotion = new QCheckBox(tr("Preserve movement style"), m_advancedEnemyPanel);
     m_preserveLocomotion->setObjectName(QStringLiteral("apEnemyPreserveLocomotion"));
-    m_preserveLocomotion->setChecked(true);
+    m_preserveLocomotion->setChecked(false);
     m_normalizeScaling = new QCheckBox(tr("Adjust enemy stats for their new role"),
                                         m_advancedEnemyPanel);
     m_normalizeScaling->setObjectName(QStringLiteral("apEnemyNormalizeStats"));
+    m_shuffleBosses = new QCheckBox(tr("Shuffle bosses (reviewed encounters)"),
+                                    m_advancedEnemyPanel);
+    m_shuffleBosses->setObjectName(QStringLiteral("apShuffleBosses"));
+    m_shuffleBosses->setChecked(true);
     advancedLayout->addWidget(m_allowTierMixing);
     advancedLayout->addWidget(m_preserveLocomotion);
     advancedLayout->addWidget(m_normalizeScaling);
+    advancedLayout->addWidget(m_shuffleBosses);
     m_advancedEnemyPanel->setVisible(false);
     enemyLayout->addWidget(m_advancedEnemyPanel);
-    connect(m_randomizeEnemies, &QCheckBox::toggled, this,
-            [this](bool enabled) { RefreshEnemizerControls(); });
+    connect(m_enemyMode, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int) { RefreshMode(); InvalidatePrepared(); });
     connect(m_expandedCoverage, &QGroupBox::toggled, this,
             [this](bool) { RefreshEnemizerControls(); });
     connect(m_advancedEnemyOptions, &QToolButton::toggled, this, [this](bool expanded) {
@@ -151,9 +216,13 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
     layout->addWidget(m_enemizerGroup);
 
     auto* actions = new QHBoxLayout();
-    m_playButton = new QPushButton(tr("&Play"), this);
+    m_randomizeButton = new QPushButton(tr("&Randomize"), this);
+    m_randomizeButton->setObjectName(QStringLiteral("apRandomize"));
+    m_operationControls << m_randomizeButton;
+    connect(m_randomizeButton, &QPushButton::clicked, this, &ApPage::RandomizeClicked);
+    m_playButton = new QPushButton(tr("&Launch"), this);
     m_playButton->setObjectName(QStringLiteral("apPlay"));
-    m_playButton->setDefault(true);
+    m_randomizeButton->setDefault(true);
     m_operationControls << m_playButton;
     connect(m_playButton, &QPushButton::clicked, this, &ApPage::PlayClicked);
     m_cancelButton = new QPushButton(tr("&Cancel"), this);
@@ -163,6 +232,7 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
     m_switchSeedButton->setObjectName(QStringLiteral("apSwitchSeed"));
     m_operationControls << m_switchSeedButton;
     connect(m_switchSeedButton, &QPushButton::clicked, this, &ApPage::SwitchSeedClicked);
+    actions->addWidget(m_randomizeButton);
     actions->addWidget(m_playButton);
     actions->addWidget(m_cancelButton);
     actions->addWidget(m_switchSeedButton);
@@ -172,7 +242,7 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
     m_progress->setTextVisible(false);
     layout->addWidget(m_progress);
 
-    m_statusLabel = new QLabel(tr("Choose a seed file, then press Play."), this);
+    m_statusLabel = new QLabel(tr("Enter a seed, then press Randomize or Launch."), this);
     m_statusLabel->setObjectName(QStringLiteral("apStatus"));
     m_statusLabel->setWordWrap(true);
     m_statusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -198,8 +268,42 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
     nav->addWidget(helpButton);
     layout->addLayout(nav);
 
+    // The launcher's dark palette does not define PlaceholderText on every
+    // platform, which otherwise leaves black hints on dark input fields.
+    for (QLineEdit* edit : findChildren<QLineEdit*>()) {
+        QPalette palette = edit->palette();
+        palette.setColor(QPalette::PlaceholderText, QColor(QStringLiteral("#a9b0b8")));
+        edit->setPalette(palette);
+    }
+
     connect(m_coordinator, &ApCoordinator::StageChanged, this,
             [this](const QString& stage) { SetStatus(stage, false); });
+    connect(m_modeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int mode) {
+                RefreshMode();
+                InvalidatePrepared();
+                if (mode == 0 && m_playerCombo->count() == 0 &&
+                    QFileInfo::exists(m_seedEdit->text().trimmed())) SeedChanged();
+            });
+    connect(m_standaloneSeedEdit, &QLineEdit::textChanged, this,
+            [this](const QString&) { InvalidatePrepared(); });
+    connect(m_includeDlc, &QCheckBox::toggled, this,
+            [this](bool) { InvalidatePrepared(); });
+    connect(m_seedEdit, &QLineEdit::textChanged, this,
+            [this](const QString&) { InvalidatePrepared(); });
+    connect(m_playerCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int) { InvalidatePrepared(); });
+    connect(m_serverEdit, &QLineEdit::textChanged, this,
+            [this](const QString&) { InvalidatePrepared(); });
+    connect(m_passwordEdit, &QLineEdit::textChanged, this,
+            [this](const QString&) { InvalidatePrepared(); });
+    connect(m_enemySeedEdit, &QLineEdit::textChanged, this,
+            [this](const QString&) { InvalidatePrepared(); });
+    for (QCheckBox* option : {m_allowTierMixing, m_preserveLocomotion, m_normalizeScaling,
+                              m_shuffleBosses}) {
+        connect(option, &QCheckBox::toggled, this,
+                [this](bool) { InvalidatePrepared(); });
+    }
     m_pollTimer = new QTimer(this);
     m_pollTimer->setInterval(5000);
     connect(m_pollTimer, &QTimer::timeout, this, &ApPage::PollStatus);
@@ -210,7 +314,11 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
     m_serverLabel->setVisible(false);
     m_serverEdit->setVisible(false);
     RefreshEnemizerControls();
+    LoadSettings();
+    RefreshMode();
     RefreshForSession();
+    if (m_modeCombo->currentIndex() == 0 &&
+        QFileInfo::exists(m_seedEdit->text().trimmed())) SeedChanged();
 }
 
 void ApPage::SetBusy(bool busy, const QString& stage) {
@@ -222,29 +330,130 @@ void ApPage::SetBusy(bool busy, const QString& stage) {
     m_cancelButton->setEnabled(busy);
     m_progress->setRange(0, busy ? 0 : 1);
     m_progress->setValue(busy ? 0 : 1);
+    m_progress->setVisible(busy);
     if (busy && !stage.isEmpty()) {
         SetStatus(stage, false);
     }
     RefreshEnemizerControls();
+    RefreshForSession();
 }
 
 void ApPage::RefreshEnemizerControls() {
-    if (m_enemizerGroup == nullptr || m_randomizeEnemies == nullptr) {
+    if (m_enemizerGroup == nullptr || m_enemyMode == nullptr) {
         return;
     }
-    const bool sessionLocked = m_coordinator != nullptr &&
-                               (m_coordinator->HasSession() || m_coordinator->GameStarted());
+    const bool sessionLocked = m_coordinator != nullptr && m_coordinator->GameStarted();
     m_enemizerGroup->setEnabled(!m_busy && !sessionLocked);
-    const bool optionsEnabled = !m_busy && !sessionLocked && m_randomizeEnemies->isChecked();
-    m_expandedCoverage->setEnabled(optionsEnabled);
+    const bool optionsEnabled = !m_busy && !sessionLocked && m_enemyMode->currentIndex() != 2 &&
+                                m_modeCombo->currentIndex() == 0;
     m_advancedEnemyOptions->setEnabled(optionsEnabled);
     m_advancedEnemyPanel->setEnabled(optionsEnabled && m_advancedEnemyOptions->isChecked());
+}
+
+void ApPage::InvalidatePrepared() {
+    if (m_busy || m_coordinator->GameStarted()) return;
+    m_hasPrepared = false;
+    SaveSettings();
+    if (m_playButton != nullptr) RefreshForSession();
+}
+
+void ApPage::RefreshMode() {
+    const bool standalone = m_modeCombo->currentIndex() == 1;
+    if (m_lastModeIndex != m_modeCombo->currentIndex()) {
+        if (m_lastModeIndex == 0) m_apEnemyMode = m_enemyMode->currentIndex();
+        else m_standaloneEnemyMode = m_enemyMode->currentIndex();
+        m_lastModeIndex = m_modeCombo->currentIndex();
+        m_enemyMode->setCurrentIndex(standalone ? m_standaloneEnemyMode : m_apEnemyMode);
+    }
+    m_seedLabel->setVisible(!standalone);
+    m_apSeedRow->setVisible(!standalone);
+    m_standaloneSeedEdit->setVisible(standalone);
+    m_standaloneSeedLabel->setVisible(standalone);
+    m_includeDlc->setVisible(standalone);
+    m_playerLabel->setVisible(!standalone && m_playerCombo->count() > 1);
+    m_playerCombo->setVisible(!standalone && m_playerCombo->count() > 1);
+    m_serverLabel->setVisible(!standalone && m_serverEdit->text().isEmpty() &&
+                              !m_seedEdit->text().isEmpty());
+    m_serverEdit->setVisible(m_serverLabel->isVisible());
+    m_passwordLabel->setVisible(!standalone);
+    m_passwordEdit->setVisible(!standalone);
+    // The standalone planner currently supports enemy randomization as one
+    // setting. Its expanded option is reserved for AP's additional contracts.
+    if (auto* model = qobject_cast<QStandardItemModel*>(m_enemyMode->model())) {
+        model->item(1)->setEnabled(!standalone);
+    }
+    if (standalone && m_enemyMode->currentIndex() == 1) m_enemyMode->setCurrentIndex(0);
+    m_advancedEnemyOptions->setVisible(!standalone);
+    m_advancedEnemyPanel->setVisible(!standalone && m_advancedEnemyOptions->isChecked());
+    m_enemySeedRow->setVisible(!standalone && m_enemyMode->currentIndex() != 2);
+    RefreshEnemizerControls();
+}
+
+void ApPage::LoadSettings() {
+    const QString path = ApBackend::DefaultStateRoot() + QStringLiteral("/ui-settings.json");
+    QFile file(path);
+    if (file.open(QIODevice::ReadOnly)) {
+        const QJsonObject saved = QJsonDocument::fromJson(file.readAll()).object();
+        const QSignalBlocker blockMode(m_modeCombo);
+        const QSignalBlocker blockApSeed(m_seedEdit);
+        const QSignalBlocker blockStandaloneSeed(m_standaloneSeedEdit);
+        const QSignalBlocker blockEnemy(m_enemyMode);
+        const QSignalBlocker blockDlc(m_includeDlc);
+        m_apEnemyMode = qBound(0, saved.value(QStringLiteral("ap_enemy_mode")).toInt(), 2);
+        m_standaloneEnemyMode = saved.value(QStringLiteral("standalone_enemy_mode")).toInt() == 2 ? 2 : 0;
+        m_lastModeIndex = saved.value(QStringLiteral("mode")).toInt() == 1 ? 1 : 0;
+        m_modeCombo->setCurrentIndex(m_lastModeIndex);
+        m_enemyMode->setCurrentIndex(m_lastModeIndex == 1 ? m_standaloneEnemyMode : m_apEnemyMode);
+        m_savedApSeedPath = saved.value(QStringLiteral("ap_seed_path")).toString();
+        m_seedEdit->setText(m_savedApSeedPath);
+        m_standaloneSeedEdit->setText(saved.value(QStringLiteral("standalone_seed")).toString());
+        m_includeDlc->setChecked(saved.value(QStringLiteral("include_dlc")).toBool(true));
+        m_savedPlayerName = saved.value(QStringLiteral("ap_player")).toString();
+        m_savedServer = saved.value(QStringLiteral("ap_server")).toString();
+        m_serverEdit->setText(m_savedServer);
+        m_enemySeedEdit->setText(saved.value(QStringLiteral("enemy_seed")).toString());
+        m_shuffleBosses->setChecked(saved.value(QStringLiteral("shuffle_bosses")).toBool(true));
+        m_allowTierMixing->setChecked(saved.value(QStringLiteral("allow_tier_mixing")).toBool(false));
+        m_preserveLocomotion->setChecked(saved.value(QStringLiteral("preserve_locomotion")).toBool(false));
+        m_normalizeScaling->setChecked(saved.value(QStringLiteral("normalize_scaling")).toBool(false));
+    }
+    m_settingsLoaded = true;
+}
+
+void ApPage::SaveSettings() const {
+    if (!m_settingsLoaded) return;
+    const QString root = ApBackend::DefaultStateRoot();
+    if (!QDir().mkpath(root)) return;
+    QSaveFile file(root + QStringLiteral("/ui-settings.json"));
+    if (!file.open(QIODevice::WriteOnly)) return;
+    const int apEnemy = m_modeCombo->currentIndex() == 0
+        ? m_enemyMode->currentIndex() : m_apEnemyMode;
+    const int standaloneEnemy = m_modeCombo->currentIndex() == 1
+        ? m_enemyMode->currentIndex() : m_standaloneEnemyMode;
+    const QJsonObject saved{
+        {QStringLiteral("mode"), m_modeCombo->currentIndex()},
+        {QStringLiteral("ap_seed_path"), m_seedEdit->text().trimmed()},
+        {QStringLiteral("standalone_seed"), m_standaloneSeedEdit->text().trimmed()},
+        {QStringLiteral("include_dlc"), m_includeDlc->isChecked()},
+        {QStringLiteral("ap_enemy_mode"), apEnemy},
+        {QStringLiteral("standalone_enemy_mode"), standaloneEnemy},
+        {QStringLiteral("ap_player"), m_playerCombo->currentText().isEmpty()
+                                          ? m_savedPlayerName : m_playerCombo->currentText()},
+        {QStringLiteral("ap_server"), m_serverEdit->text().trimmed()},
+        {QStringLiteral("enemy_seed"), m_enemySeedEdit->text().trimmed()},
+        {QStringLiteral("shuffle_bosses"), m_shuffleBosses->isChecked()},
+        {QStringLiteral("allow_tier_mixing"), m_allowTierMixing->isChecked()},
+        {QStringLiteral("preserve_locomotion"), m_preserveLocomotion->isChecked()},
+        {QStringLiteral("normalize_scaling"), m_normalizeScaling->isChecked()},
+    };
+    file.write(QJsonDocument(saved).toJson(QJsonDocument::Indented));
+    file.commit();
 }
 
 void ApPage::SetStatus(const QString& text, bool isError) {
     m_statusLabel->setText(text);
     // Text alongside color: never color alone.
-    m_statusLabel->setStyleSheet(isError ? QStringLiteral("QLabel { color: #c0392b; }")
+    m_statusLabel->setStyleSheet(isError ? QStringLiteral("QLabel { color: #ff7b72; }")
                                          : QString());
     m_statusLabel->setToolTip(text);
 }
@@ -259,7 +468,11 @@ bool ApPage::EnsureConfigured(QString* error) {
     const QString backendDir =
         QCoreApplication::applicationDirPath() + QStringLiteral("/ap_backend");
     QString stateRoot = ApBackend::DefaultStateRoot();
-    return m_coordinator->Configure(gameRoot, backendDir, stateRoot, error);
+    const bool configured = m_coordinator->Configure(gameRoot, backendDir, stateRoot, error);
+    m_setupLabel->setText(configured
+        ? tr("Game and emulator setup ready.")
+        : tr("Game setup needs attention. See the status below."));
+    return configured;
 }
 
 void ApPage::BrowseSeed() {
@@ -273,7 +486,7 @@ void ApPage::BrowseSeed() {
 }
 
 void ApPage::SeedChanged() {
-    if (m_inspecting) {
+    if (m_inspecting || m_modeCombo->currentIndex() != 0) {
         return;
     }
     const QString seedPath = m_seedEdit->text().trimmed();
@@ -284,7 +497,7 @@ void ApPage::SeedChanged() {
         m_serverEdit->clear();
         m_serverLabel->setVisible(false);
         m_serverEdit->setVisible(false);
-        SetStatus(tr("Choose a seed file, then press Play."), false);
+        SetStatus(tr("Choose an AP seed file, then press Randomize."), false);
         return;
     }
     m_inspecting = true;
@@ -317,99 +530,117 @@ void ApPage::SeedChanged() {
     const QString selected = seen.result.value(QStringLiteral("selected")).toString();
     m_playerCombo->clear();
     m_playerCombo->addItems(slotNames);
-    m_playerCombo->setCurrentText(selected);
+    m_playerCombo->setCurrentText(seedPath == m_savedApSeedPath &&
+                                  slotNames.contains(m_savedPlayerName)
+                                      ? m_savedPlayerName : selected);
     const bool needsChoice = seen.result.value(QStringLiteral("needs_choice")).toBool() ||
                              slotNames.size() > 1;
     m_playerLabel->setVisible(needsChoice);
     m_playerCombo->setVisible(needsChoice);
     const QString server = seen.result.value(QStringLiteral("server")).toString();
-    m_serverEdit->setText(server);
-    const bool needsServer = server.isEmpty();
+    m_serverEdit->setText(seedPath == m_savedApSeedPath && !m_savedServer.isEmpty()
+                              ? m_savedServer : server);
+    const bool needsServer = m_serverEdit->text().isEmpty();
     m_serverLabel->setVisible(needsServer);
     m_serverEdit->setVisible(needsServer);
     if (!needsServer) {
-        SetStatus(tr("Seed ready. Press Play."), false);
+        SetStatus(tr("Seed ready. Press Randomize."), false);
     } else {
-        SetStatus(tr("Seed ready. Enter the server address, then press Play."), false);
+        SetStatus(tr("Seed ready. Enter the server address, then press Randomize."), false);
     }
     m_inspecting = false;
     SetBusy(false);
+    SaveSettings();
+}
+
+bool ApPage::BuildRequest(ApPlayRequest* request, QString* error) const {
+    const QString seedPath = m_seedEdit->text().trimmed();
+    if (seedPath.isEmpty() || !QFileInfo::exists(seedPath)) {
+        if (error) *error = tr("Choose an Archipelago seed file first.");
+        return false;
+    }
+    Common::PathToQString(request->gameRoot, Common::installPath);
+    request->seedPath = seedPath;
+    if (m_playerCombo->isVisible()) {
+        request->playerName = m_playerCombo->currentText();
+        if (request->playerName.isEmpty()) {
+            if (error) *error = tr("Choose a player for this seed first.");
+            return false;
+        }
+    }
+    request->server = m_serverEdit->text().trimmed();
+    request->password = m_passwordEdit->text();
+    request->enemizer.enabled = m_enemyMode->currentIndex() != 2;
+    if (request->enemizer.enabled) {
+        request->enemizer.seed = m_enemySeedEdit->text().trimmed();
+        request->enemizer.allowTierMixing = m_allowTierMixing->isChecked();
+        request->enemizer.preserveLocomotion = m_preserveLocomotion->isChecked();
+        request->enemizer.normalizeScaling = m_normalizeScaling->isChecked();
+        request->enemizer.bossPool = m_shuffleBosses->isChecked()
+            ? QStringLiteral("reviewed") : QString();
+        const bool expanded = m_enemyMode->currentIndex() == 1;
+        request->enemizer.releaseContracts = expanded;
+        request->enemizer.releaseSpawns = expanded;
+        request->enemizer.releaseChara = expanded;
+    }
+    return true;
+}
+
+void ApPage::RandomizeClicked() {
+    if (m_busy || m_coordinator->GameStarted()) return;
+    QString failure;
+    if (!EnsureConfigured(&failure)) { ShowError(failure); return; }
+    m_cancelled = false;
+    m_pollTimer->stop();
+    ApPlayRequest apRequest;
+    StandalonePlayRequest standaloneRequest;
+    const bool standalone = m_modeCombo->currentIndex() == 1;
+    if (standalone) {
+        standaloneRequest.seed = m_standaloneSeedEdit->text().trimmed();
+        if (standaloneRequest.seed.isEmpty()) {
+            ShowError(tr("Enter a randomizer seed first."));
+            return;
+        }
+        Common::PathToQString(standaloneRequest.gameRoot, Common::installPath);
+        standaloneRequest.includeDlc = m_includeDlc->isChecked();
+        standaloneRequest.randomizeEnemies = m_enemyMode->currentIndex() != 2;
+    } else if (!BuildRequest(&apRequest, &failure)) {
+        ShowError(failure);
+        return;
+    }
+    InvalidatePrepared();
+    SetBusy(true, tr("Randomizing your game"));
+    const bool prepared = standalone
+        ? m_coordinator->PrepareStandalone(standaloneRequest, &m_prepared, &failure)
+        : m_coordinator->Prepare(apRequest, &m_prepared, &failure);
+    SetBusy(false);
+    if (!prepared || m_cancelled) {
+        if (m_cancelled) SetStatus(tr("Cancelled. No game was started."), false);
+        else ShowError(failure);
+        return;
+    }
+    m_hasPrepared = true;
+    SetStatus(tr("Randomization ready. Press Launch when you are ready to play."), false);
+    SaveSettings();
+    RefreshForSession();
 }
 
 void ApPage::PlayClicked() {
-    if (m_busy) {
-        return;
-    }
-    if (m_coordinator->GameStarted()) {
-        QString error;
-        if (!m_coordinator->ReturnToGame(&error)) {
-            ShowError(error);
-        }
-        return;
-    }
-    QString error;
-    if (!EnsureConfigured(&error)) {
-        ShowError(error);
-        return;
-    }
-    const QString seedPath = m_seedEdit->text().trimmed();
-    if (seedPath.isEmpty() || !QFileInfo::exists(seedPath)) {
-        ShowError(tr("Choose an Archipelago seed file first."));
-        return;
-    }
-    ApPlayRequest request;
-    Common::PathToQString(request.gameRoot, Common::installPath);
-    request.seedPath = seedPath;
-    if (m_playerCombo->isVisible()) {
-        request.playerName = m_playerCombo->currentText();
-        if (request.playerName.isEmpty()) {
-            ShowError(tr("Choose a player for this seed first."));
-            return;
-        }
-    }
-    request.server = m_serverEdit->text().trimmed();
-    request.password = m_passwordEdit->text();
-    request.enemizer.enabled = m_randomizeEnemies->isChecked();
-    if (request.enemizer.enabled) {
-        request.enemizer.seed = m_enemySeedEdit->text().trimmed();
-        request.enemizer.allowTierMixing = m_allowTierMixing->isChecked();
-        request.enemizer.preserveLocomotion = m_preserveLocomotion->isChecked();
-        request.enemizer.normalizeScaling = m_normalizeScaling->isChecked();
-        if (m_expandedCoverage->isChecked()) {
-            request.enemizer.releaseContracts = m_releaseContracts->isChecked();
-            request.enemizer.releaseSpawns = m_releaseSpawns->isChecked();
-            request.enemizer.releaseChara = m_releaseChara->isChecked();
-        }
-    }
-
-    m_cancelled = false;
-    m_pollTimer->stop();
-    SetBusy(true, tr("Preparing your seed"));
-    // Backend calls can take several minutes. While they wait, the backend
-    // owns a controlled Qt event pump; all mutating controls are disabled.
-
-    ApCoordinator::Prepared prepared;
-    bool ok = false;
+    if (m_busy) return;
     QString failure;
-    // Prepare.
-    if (!m_coordinator->Prepare(request, &prepared, &failure)) {
-        if (m_cancelled) {
-            SetStatus(tr("Cancelled after the current safe step. No game was started."), false);
-        } else {
-            ShowError(failure);
-        }
-        SetBusy(false);
+    if (m_coordinator->GameStarted()) {
+        if (!m_coordinator->ReturnToGame(&failure)) ShowError(failure);
         return;
     }
-    if (m_cancelled) {
-        SetStatus(tr("Cancelled. Your previous setup is untouched."), false);
-        SetBusy(false);
-        return;
+    if (!m_hasPrepared) {
+        RandomizeClicked();
+        if (!m_hasPrepared) return;
     }
-    // Activate through the shared mod service (copy mode).
+    if (!EnsureConfigured(&failure)) { ShowError(failure); return; }
+    m_cancelled = false;
     SetBusy(true, tr("Setting up your game"));
     bool wasConflict = false;
-    if (!m_coordinator->Activate(prepared, false, &wasConflict, &failure)) {
+    if (!m_coordinator->Activate(m_prepared, false, &wasConflict, &failure)) {
         if (m_cancelled) {
             SetStatus(tr("Cancelled after the current safe step. Use Regular play to restore the previous setup if needed."), false);
             SetBusy(false);
@@ -418,12 +649,12 @@ void ApPage::PlayClicked() {
         if (wasConflict) {
             // Offer Disable conflicting mod and play, with the exact
             // reversible plan, and nothing else.
-            auto answer = QMessageBox::question(
+            auto answer = AskDark(
                 this, tr("Mod conflict"),
                 failure + tr("\n\nDisable the conflicting mod and play? "
                              "It will be left deactivated afterwards; your other mods stay."));
             if (answer == QMessageBox::Yes) {
-                if (!m_coordinator->Activate(prepared, true, &wasConflict, &failure)) {
+                if (!m_coordinator->Activate(m_prepared, true, &wasConflict, &failure)) {
                     ShowError(failure);
                     SetBusy(false);
                     return;
@@ -443,10 +674,11 @@ void ApPage::PlayClicked() {
         SetBusy(false);
         return;
     }
-    // Arm, start, connect.
-    if (!m_coordinator->Arm(prepared, &failure)) {
-        if (m_cancelled) SetStatus(tr("Cancelled after the current safe step. The game was not started."), false);
-        else ShowError(failure);
+    // AP needs a backend arm and client. Standalone has already verified its
+    // receipt before activation and launches without an AP session.
+    if (m_prepared.mode == ApCoordinator::Prepared::Mode::Archipelago &&
+        !m_coordinator->Arm(m_prepared, &failure)) {
+        ShowError(failure);
         SetBusy(false);
         return;
     }
@@ -456,7 +688,8 @@ void ApPage::PlayClicked() {
         SetBusy(false);
         return;
     }
-    if (!m_coordinator->Connect(&failure)) {
+    if (m_prepared.mode == ApCoordinator::Prepared::Mode::Archipelago &&
+        !m_coordinator->Connect(&failure)) {
         if (m_cancelled) {
             SetStatus(tr("Cancelled after the current safe step. The game may be open; close it before switching setups."), false);
         } else if (m_coordinator->lastErrorCode() == QStringLiteral("password-required")) {
@@ -467,26 +700,22 @@ void ApPage::PlayClicked() {
         SetBusy(false);
         return;
     }
-    ok = true;
     SetBusy(false);
-    if (ok) {
-        QString status = tr("Game and Archipelago client started. Check the game for connection status.");
-        if (!prepared.enemySummary.isEmpty()) {
-            status += QStringLiteral("\n") + prepared.enemySummary;
-        }
-        SetStatus(status, false);
-        m_pollTimer->start();
+    QString status = m_prepared.mode == ApCoordinator::Prepared::Mode::Standalone
+        ? tr("Game started with the verified standalone randomizer package.")
+        : tr("Game and Archipelago client started. Check the game for connection status.");
+    if (!m_prepared.enemySummary.isEmpty()) {
+        status += QStringLiteral("\n") + m_prepared.enemySummary;
     }
+    SetStatus(status, false);
+    m_pollTimer->start();
     RefreshForSession();
-    if (!m_coordinator->sessionId().isEmpty()) {
-        m_pollTimer->start();
-    }
 }
 
 void ApPage::CancelClicked() {
     m_cancelled = true;
     m_coordinator->RequestCancel();
-    SetStatus(tr("Cancellation requested. The current backend step will finish safely, then Play will stop."), false);
+    SetStatus(tr("Cancellation requested. The current backend step will finish safely."), false);
 }
 
 void ApPage::SwitchSeedClicked() {
@@ -494,9 +723,9 @@ void ApPage::SwitchSeedClicked() {
         return;
     }
     if (m_coordinator->HasSession() || m_coordinator->GameStarted()) {
-        auto answer = QMessageBox::question(
+        auto answer = AskDark(
             this, tr("Switch seed"),
-            tr("A game is running. Quit the game and switch seed?"));
+            tr("Stop the current randomizer session and change seed?"));
         if (answer != QMessageBox::Yes) {
             return;
         }
@@ -508,8 +737,10 @@ void ApPage::SwitchSeedClicked() {
     }
     m_pollTimer->stop();
     m_seedEdit->clear();
+    m_standaloneSeedEdit->clear();
     m_playerCombo->clear();
-    SetStatus(tr("Choose a seed file, then press Play."), false);
+    m_hasPrepared = false;
+    SetStatus(tr("Choose a mode and seed, then press Randomize."), false);
     RefreshForSession();
 }
 
@@ -518,9 +749,9 @@ void ApPage::RegularPlayClicked() {
         return;
     }
     if (m_coordinator->HasSession() || m_coordinator->GameStarted()) {
-        const auto answer = QMessageBox::question(
+        const auto answer = AskDark(
             this, tr("Switch to regular play"),
-            tr("Stop the Archipelago client and game, then remove its active package?"));
+            tr("Stop the current game and client, then remove its active randomizer package?"));
         if (answer != QMessageBox::Yes) {
             return;
         }
@@ -535,7 +766,8 @@ void ApPage::RegularPlayClicked() {
         return;
     }
     m_pollTimer->stop();
-    SetStatus(tr("Archipelago package removed. Your other mods were kept."), false);
+    m_hasPrepared = false;
+    SetStatus(tr("Randomizer package removed. Your other mods were kept."), false);
     RefreshForSession();
 }
 
@@ -549,7 +781,10 @@ void ApPage::HelpClicked() {
         lines.push_back(tr("Protocol: %1").arg(
             caps.value(QStringLiteral("protocol")).toString()));
     }
-    QMessageBox::information(this, tr("Diagnostics"), lines.join(QStringLiteral("\n")));
+    QMessageBox box(QMessageBox::Information, tr("Diagnostics"),
+                    lines.join(QStringLiteral("\n")), QMessageBox::Ok, this);
+    StyleDialog(&box);
+    box.exec();
 }
 
 void ApPage::closeEvent(QCloseEvent* event) {
@@ -567,7 +802,9 @@ void ApPage::PollStatus() {
         return;
     }
     if (state == QStringLiteral("playing")) {
-        SetStatus(tr("Game and Archipelago client are running. Check the game for connection status."), false);
+        SetStatus(m_prepared.mode == ApCoordinator::Prepared::Mode::Standalone
+                      ? tr("Game is running with the standalone randomizer package.")
+                      : tr("Game and Archipelago client are running. Check the game for connection status."), false);
     } else if (state == QStringLiteral("recoverable")) {
         SetStatus(tr("The Archipelago client or game is no longer running. "
                      "Your setup is kept; use Regular play to restore your previous setup."), false);
@@ -579,9 +816,15 @@ void ApPage::RefreshForSession() {
     RefreshEnemizerControls();
     if (m_coordinator->GameStarted()) {
         m_playButton->setText(tr("Return to &game"));
-    } else if (m_coordinator->HasSession()) {
-        m_playButton->setText(tr("&Play"));
+        m_playButton->setEnabled(!m_busy);
     } else {
-        m_playButton->setText(tr("&Play"));
+        m_playButton->setText(tr("&Launch"));
+        const bool hasSeed = m_modeCombo->currentIndex() == 1
+            ? !m_standaloneSeedEdit->text().trimmed().isEmpty()
+            : !m_seedEdit->text().trimmed().isEmpty();
+        m_playButton->setEnabled(!m_busy && (m_hasPrepared || hasSeed));
     }
+    m_randomizeButton->setEnabled(!m_busy && !m_coordinator->GameStarted());
+    m_randomizeButton->setDefault(!m_hasPrepared && !m_coordinator->GameStarted());
+    m_playButton->setDefault(m_hasPrepared || m_coordinator->GameStarted());
 }
