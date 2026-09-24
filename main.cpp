@@ -12,6 +12,8 @@
 
 #ifndef USE_WEBENGINE
 #include <QtWebView>
+#include <QQuickView>
+#include <QQuickItem>
 #endif
 
 #include "modules/RunGuard.h"
@@ -43,6 +45,9 @@ int main(int argc, char* argv[]) {
     QCommandLineOption apPackageSmoke(
         "ap-package-smoke", "Verify the packaged launcher and Qt runtime can initialize.");
     parser.addOption(apPackageSmoke);
+    QCommandLineOption apWebViewSmoke(
+        "ap-webview-smoke", "Verify the packaged Mod Downloader browser loads without opening a site.");
+    parser.addOption(apWebViewSmoke);
 #endif
     parser.process(a);
 #ifdef BB_AP_FORK
@@ -56,6 +61,19 @@ int main(int argc, char* argv[]) {
 
 #ifndef USE_WEBENGINE
     QtWebView::initialize();
+#ifdef BB_AP_FORK
+    if (parser.isSet(apWebViewSmoke)) {
+        QQuickView view;
+        view.setSource(QUrl(QStringLiteral("qrc:/web.qml")));
+        auto* root = view.rootObject();
+        return root != nullptr && root->findChild<QObject*>(QStringLiteral("currentWebView")) != nullptr
+                   ? 0 : 2;
+    }
+#endif
+#else
+#ifdef BB_AP_FORK
+    if (parser.isSet(apWebViewSmoke)) return 0;
+#endif
 #endif
     bool noGUIset = parser.isSet(noGui);
 

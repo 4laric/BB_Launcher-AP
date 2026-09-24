@@ -10,7 +10,7 @@ Rectangle {
         id: myView
         anchors.fill: parent // Makes the WebView fill its parent's area
         objectName: "currentWebView" // Needed for C++ findChild
-        url: "https://www.qt.io"
+        url: "about:blank"
     }
 
     Connections{
