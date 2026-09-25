@@ -170,6 +170,7 @@ class ApCoordinator : public QObject {
     QString m_lastErrorCode;
     bool m_playing = false;
     bool m_ownStart = false;
+    bool m_ipcStartPending = false;
     bool m_recoveryFailed = false;
     QString m_recoveryError;
 };

@@ -126,6 +126,17 @@ QString ApCoordinator::Preflight(const QString& action) {
             .arg(m_recoveryError);
     }
     if (m_ownStart) {
+        if (action == QStringLiteral("start-game")) {
+            m_ipcStartPending = false;
+        }
+        return {};
+    }
+    if (action == QStringLiteral("start-game") && m_ipcStartPending &&
+        m_emu != nullptr &&
+        m_emu->OwnsProcess(m_gameIdentity)) {
+        // The emulator's IPC handshake starts the game after StartGame has
+        // returned. It belongs to our tracked process, not a second launch.
+        m_ipcStartPending = false;
         return {};
     }
     const bool starting = action == QStringLiteral("start") ||
@@ -654,14 +665,17 @@ bool ApCoordinator::StartGame(QString* error) {
     Common::PathToQString(eboot, Common::installPath / "eboot.bin");
     const QStringList args{QStringLiteral("--game"), eboot};
     const QString workDir = fileInfo.absolutePath();
+    m_ipcStartPending = true;
     m_ownStart = true;
     EmulatorProcessIdentity identity;
     const bool started = m_emu->Start(fileInfo, args, workDir, &identity, error);
     m_ownStart = false;
     if (!started) {
+        m_ipcStartPending = false;
         return false;
     }
     if (!identity.valid) {
+        m_ipcStartPending = false;
         if (error != nullptr) {
             *error = tr("Could not establish the emulator process identity");
         }
@@ -846,6 +860,7 @@ bool ApCoordinator::StopSessionAndDeactivate(QString* error) {
 }
 
 void ApCoordinator::ResetSession() {
+    m_ipcStartPending = false;
     m_playId.clear();
     m_armId.clear();
     m_sessionId.clear();

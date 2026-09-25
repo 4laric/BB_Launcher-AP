@@ -54,6 +54,9 @@ class EmulatorService : public QObject {
     virtual bool Focus(const EmulatorProcessIdentity& identity, QString* error);
     virtual bool Stop(const EmulatorProcessIdentity& identity, QString* error);
     virtual bool IsEmulatorRunning() const;
+    // True only while this service still owns the exact process started for
+    // the session. Used to authorize its IPC game-start handshake.
+    virtual bool OwnsProcess(const EmulatorProcessIdentity& identity) const;
     // Runs the preflight handler without starting anything, so read-only
     // actions (e.g. sending START to an already-running game) share the
     // same gate as every launch path.

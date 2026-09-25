@@ -83,6 +83,10 @@ class FakeEmulatorService final : public EmulatorService {
         return true;
     }
     bool IsEmulatorRunning() const override { return running; }
+    bool OwnsProcess(const EmulatorProcessIdentity& identity) const override {
+        return running && identity.valid && identity.pid == 42 &&
+               identity.creationTime == 77;
+    }
 
     bool running = false;
     bool stopSucceeds = true;
@@ -313,6 +317,52 @@ class ApUiTest final : public QObject {
         QVERIFY(m_coordinator->GameStarted());
         QVERIFY(QDir(QDir::currentPath() + QStringLiteral("/BBLauncher/Mods-Active (DO NOT DELETE)/Archipelago-Fixture")).exists());
         QVERIFY(QFile::exists(m_scratch->path() + QStringLiteral("/CUSA03173-mods/dvdroot_ps4/map/fixture.bin")));
+    }
+
+    void armedIpcStartsOnlyTheOwnedGameOnce() {
+        const QString seedPath = m_scratch->path() + QStringLiteral("/fixture.bbseed.json");
+        QFile seed(seedPath);
+        QVERIFY(seed.open(QIODevice::WriteOnly));
+        seed.write("fixture");
+        seed.close();
+        ApCoordinator::Prepared prepared;
+        ApPlayRequest request{m_gameRoot, seedPath, QStringLiteral("Alice"), {}, {}};
+        QString error;
+        QVERIFY2(m_coordinator->Configure(m_gameRoot,
+                    QCoreApplication::applicationDirPath() + QStringLiteral("/ap_backend"),
+                    ApBackend::DefaultStateRoot(), &error), qPrintable(error));
+        QVERIFY2(m_coordinator->Prepare(request, &prepared, &error), qPrintable(error));
+        QVERIFY2(m_coordinator->Activate(prepared, false, nullptr, &error), qPrintable(error));
+        QVERIFY2(m_coordinator->Arm(prepared, &error), qPrintable(error));
+        QVERIFY(!m_emulator->Check(QStringLiteral("start-game"), &error));
+        QVERIFY2(m_coordinator->StartGame(&error), qPrintable(error));
+        QVERIFY(!m_emulator->Check(QStringLiteral("start"), &error));
+        QVERIFY(!m_emulator->Check(QStringLiteral("restart"), &error));
+        m_emulator->running = false;
+        QVERIFY(!m_emulator->Check(QStringLiteral("start-game"), &error));
+        m_emulator->running = true;
+        QVERIFY2(m_emulator->Check(QStringLiteral("start-game"), &error), qPrintable(error));
+        QVERIFY(!m_emulator->Check(QStringLiteral("start-game"), &error));
+        QCOMPARE(m_emulator->startCalls, 1);
+    }
+
+    void standaloneIpcStartsOnlyTheOwnedGameOnce() {
+        const StandalonePlayRequest request{m_gameRoot, QStringLiteral("ipc-seed"), true, true};
+        ApCoordinator::Prepared prepared;
+        QString error;
+        QVERIFY2(m_coordinator->Configure(m_gameRoot,
+                    QCoreApplication::applicationDirPath() + QStringLiteral("/ap_backend"),
+                    ApBackend::DefaultStateRoot(), &error), qPrintable(error));
+        QVERIFY2(m_coordinator->PrepareStandalone(request, &prepared, &error),
+                 qPrintable(error));
+        QVERIFY2(m_coordinator->Activate(prepared, false, nullptr, &error), qPrintable(error));
+        QVERIFY2(m_coordinator->StartGame(&error), qPrintable(error));
+        QVERIFY(m_coordinator->IsPlaying());
+        QVERIFY(!m_emulator->Check(QStringLiteral("start"), &error));
+        QVERIFY(!m_emulator->Check(QStringLiteral("restart"), &error));
+        QVERIFY2(m_emulator->Check(QStringLiteral("start-game"), &error), qPrintable(error));
+        QVERIFY(!m_emulator->Check(QStringLiteral("start-game"), &error));
+        QCOMPARE(m_emulator->startCalls, 1);
     }
 
     void cancelButtonRemainsResponsiveAndProtocolStaysSynchronized() {
