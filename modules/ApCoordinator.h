@@ -121,7 +121,8 @@ class ApCoordinator : public QObject {
         bool reused = false;
         QString enemySummary;
     };
-    bool Prepare(const ApPlayRequest& request, Prepared* prepared, QString* error);
+    bool Prepare(const ApPlayRequest& request, Prepared* prepared, QString* error,
+                 bool reuseExisting = false);
     bool PrepareStandalone(const StandalonePlayRequest& request, Prepared* prepared,
                            QString* error);
     // Activates the prepared package through ModService (copy). When a
@@ -147,6 +148,7 @@ class ApCoordinator : public QObject {
 
   private:
     bool EnsureBackend(QString* error);
+    bool ReleaseIdleManagedPackage(QString* error);
     bool StopSessionAndDeactivate(QString* error);
     bool SaveManagedPackage(const QString& package, Prepared::Mode mode,
                             QString* error);

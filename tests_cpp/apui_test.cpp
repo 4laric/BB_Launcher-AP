@@ -209,6 +209,8 @@ class ApUiTest final : public QObject {
         QVERIFY(captured.open(QIODevice::ReadOnly));
         const QJsonObject capturedRequest =
             QJsonDocument::fromJson(captured.readAll()).object();
+        QCOMPARE(capturedRequest.value(QStringLiteral("params")).toObject()
+                     .value(QStringLiteral("reuse_existing")).toBool(), false);
         const QJsonObject enemy =
             capturedRequest.value(QStringLiteral("params")).toObject()
                 .value(QStringLiteral("enemizer")).toObject();
@@ -450,8 +452,12 @@ class ApUiTest final : public QObject {
         firstEnemy.remove(QStringLiteral("seed"));
         secondEnemy.remove(QStringLiteral("seed"));
         QVERIFY(firstEnemy == secondEnemy);
+        QCOMPARE(first.value(QStringLiteral("reuse_existing")).toBool(), true);
+        QCOMPARE(second.value(QStringLiteral("reuse_existing")).toBool(), false);
         first.insert(QStringLiteral("enemizer"), firstEnemy);
         second.insert(QStringLiteral("enemizer"), secondEnemy);
+        first.remove(QStringLiteral("reuse_existing"));
+        second.remove(QStringLiteral("reuse_existing"));
         QVERIFY(first == second); // Same AP world, player, server, and options.
         QFile settings(ApBackend::DefaultStateRoot() + QStringLiteral("/ui-settings.json"));
         QVERIFY(settings.open(QIODevice::ReadOnly));
@@ -761,6 +767,9 @@ class ApUiTest final : public QObject {
                                           &error, {}, false), qPrintable(error));
         QVERIFY(m_coordinator->backend() == nullptr);
         QVERIFY(!m_coordinator->Preflight(QStringLiteral("start-game")).isEmpty());
+        qputenv("BB_AP_TEST_REQUIRE_DEACTIVATED",
+                (QDir::currentPath() + QStringLiteral(
+                    "/BBLauncher/Mods-Active (DO NOT DELETE)/Archipelago-Fixture")).toLocal8Bit());
         StandalonePlayRequest standalone{m_gameRoot, QStringLiteral("new-mode"), true, true};
         QVERIFY2(m_coordinator->PrepareStandalone(standalone, &prepared, &error),
                  qPrintable(error));
@@ -773,6 +782,9 @@ class ApUiTest final : public QObject {
         m_coordinator.reset();
         m_coordinator = std::make_unique<ApCoordinator>(m_emulator.get());
         QVERIFY2(configure(), qPrintable(error));
+        qputenv("BB_AP_TEST_REQUIRE_DEACTIVATED",
+                (QDir::currentPath() + QStringLiteral(
+                    "/BBLauncher/Mods-Active (DO NOT DELETE)/Bloodborne-Standalone-Fixture")).toLocal8Bit());
         QVERIFY2(m_coordinator->Prepare(ap, &prepared, &error), qPrintable(error));
         QVERIFY2(m_coordinator->Activate(prepared, false, nullptr, &error), qPrintable(error));
         QVERIFY(!QDir(QDir::currentPath() + QStringLiteral(
@@ -787,6 +799,86 @@ class ApUiTest final : public QObject {
             "/BBLauncher/Mods-Active (DO NOT DELETE)/Unrelated")).exists());
         QVERIFY(!QDir(QDir::currentPath() + QStringLiteral(
             "/BBLauncher/Mods-Active (DO NOT DELETE)/Archipelago-Fixture")).exists());
+    }
+
+    void restartPreparesAndLaunchesTheSameSeedWithOnlyItsManagedPackageRemoved() {
+        const QString backendDir = QCoreApplication::applicationDirPath() +
+                                   QStringLiteral("/ap_backend");
+        const QString stateRoot = ApBackend::DefaultStateRoot();
+        QString error;
+        QVERIFY2(m_coordinator->Configure(m_gameRoot, backendDir, stateRoot, &error),
+                 qPrintable(error));
+        const QString unrelatedPath = QDir::currentPath() +
+            QStringLiteral("/BBLauncher/Mods/Unrelated/dvdroot_ps4/map");
+        QVERIFY(QDir().mkpath(unrelatedPath));
+        QFile unrelated(unrelatedPath + QStringLiteral("/keep.bin"));
+        QVERIFY(unrelated.open(QIODevice::WriteOnly));
+        unrelated.write("keep");
+        unrelated.close();
+        modservice::Plan other;
+        QVERIFY(m_coordinator->modService()->PlanActivate("Unrelated", other).ok);
+        QVERIFY(m_coordinator->modService()->Commit(other).ok);
+        const QString unrelatedActive = QDir::currentPath() +
+            QStringLiteral("/BBLauncher/Mods-Active (DO NOT DELETE)/Unrelated");
+        const QString managedActive = QDir::currentPath() +
+            QStringLiteral("/BBLauncher/Mods-Active (DO NOT DELETE)/Archipelago-Fixture");
+        const QString seedPath = m_scratch->path() + QStringLiteral("/fixture.bbseed.json");
+        QFile seed(seedPath);
+        QVERIFY(seed.open(QIODevice::WriteOnly));
+        seed.write("fixture");
+        seed.close();
+        ApPlayRequest request{m_gameRoot, seedPath, QStringLiteral("Alice"), {}, {}};
+        ApCoordinator::Prepared prepared;
+        QVERIFY2(m_coordinator->Prepare(request, &prepared, &error), qPrintable(error));
+        QVERIFY2(m_coordinator->Activate(prepared, false, nullptr, &error), qPrintable(error));
+        QVERIFY(QDir(managedActive).exists());
+
+        m_coordinator.reset();
+        m_coordinator = std::make_unique<ApCoordinator>(m_emulator.get());
+        QVERIFY2(m_coordinator->Configure(m_gameRoot, backendDir, stateRoot,
+                                          &error, {}, false), qPrintable(error));
+        m_emulator->running = true;
+        QVERIFY(!m_coordinator->Prepare(request, &prepared, &error, true));
+        QVERIFY(QDir(managedActive).exists());
+        QVERIFY(QDir(unrelatedActive).exists());
+        m_emulator->running = false;
+        qputenv("BB_AP_TEST_REQUIRE_DEACTIVATED", managedActive.toLocal8Bit());
+        QVERIFY2(m_coordinator->Prepare(request, &prepared, &error, true), qPrintable(error));
+        QVERIFY(!QDir(managedActive).exists());
+        QVERIFY(QDir(unrelatedActive).exists());
+        QFile captured(m_capturedPrepare);
+        QVERIFY(captured.open(QIODevice::ReadOnly));
+        const QJsonObject params = QJsonDocument::fromJson(captured.readAll()).object()
+                                       .value(QStringLiteral("params")).toObject();
+        QCOMPARE(params.value(QStringLiteral("reuse_existing")).toBool(), true);
+        QVERIFY2(m_coordinator->Activate(prepared, false, nullptr, &error), qPrintable(error));
+        QVERIFY2(m_coordinator->Arm(prepared, &error), qPrintable(error));
+        QVERIFY2(m_coordinator->StartGame(&error), qPrintable(error));
+        QVERIFY2(m_coordinator->Connect(&error), qPrintable(error));
+        QCOMPARE(m_emulator->startCalls, 1);
+        QVERIFY(QDir(managedActive).exists());
+        QVERIFY(QDir(unrelatedActive).exists());
+    }
+
+    void launchRequestsExistingPackageReuse() {
+        const QString seedPath = m_scratch->path() + QStringLiteral("/fixture.bbseed.json");
+        QFile seed(seedPath);
+        QVERIFY(seed.open(QIODevice::WriteOnly));
+        seed.write("fixture");
+        seed.close();
+        ApPage page(m_coordinator.get());
+        page.show();
+        page.findChild<QLineEdit*>(QStringLiteral("apSeedPath"))->setText(seedPath);
+        QVERIFY(QMetaObject::invokeMethod(&page, "SeedChanged"));
+        page.findChild<QComboBox*>(QStringLiteral("apPlayerChoice"))
+            ->setCurrentText(QStringLiteral("Alice"));
+        QTest::mouseClick(page.findChild<QPushButton*>(QStringLiteral("apPlay")), Qt::LeftButton);
+        QCOMPARE(m_emulator->startCalls, 1);
+        QFile captured(m_capturedPrepare);
+        QVERIFY(captured.open(QIODevice::ReadOnly));
+        const QJsonObject params = QJsonDocument::fromJson(captured.readAll()).object()
+                                       .value(QStringLiteral("params")).toObject();
+        QCOMPARE(params.value(QStringLiteral("reuse_existing")).toBool(), true);
     }
 
     void failedStartupRecoveryBlocksRegularGameStart() {

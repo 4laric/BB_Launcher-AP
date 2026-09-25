@@ -262,7 +262,7 @@ bool ApCoordinator::InspectSeed(const QString& seedPath, const QString& playerNa
 }
 
 bool ApCoordinator::Prepare(const ApPlayRequest& request, Prepared* prepared,
-                            QString* error) {
+                            QString* error, bool reuseExisting) {
     emit StageChanged(tr("Preparing your seed"));
     m_lastErrorCode.clear();
     if (prepared != nullptr) *prepared = Prepared{};
@@ -307,6 +307,7 @@ bool ApCoordinator::Prepare(const ApPlayRequest& request, Prepared* prepared,
         {QStringLiteral("ap_client"), client},
         {QStringLiteral("suppression_dir"), m_backendDir + QStringLiteral("/suppression")},
         {QStringLiteral("cache_root"), m_stateRoot + QStringLiteral("/cache")},
+        {QStringLiteral("reuse_existing"), reuseExisting},
         {QStringLiteral("enemizer"),
          QJsonObject{{QStringLiteral("enabled"), request.enemizer.enabled},
                      {QStringLiteral("seed"), request.enemizer.seed.isEmpty()
@@ -334,6 +335,9 @@ bool ApCoordinator::Prepare(const ApPlayRequest& request, Prepared* prepared,
                                EmulatorService::Sha256OfFile(
                                    QCoreApplication::applicationFilePath())}});
 #endif
+    if (!ReleaseIdleManagedPackage(error)) {
+        return false;
+    }
     ApResponse response = m_backend->Call(QStringLiteral("prepare_play"), params, 600000);
     if (!response.ok) {
         m_lastErrorCode = response.error.code;
@@ -402,6 +406,7 @@ bool ApCoordinator::PrepareStandalone(const StandalonePlayRequest& request,
         {QStringLiteral("mods_root"), m_modRoots.inactive},
         {QStringLiteral("state_root"), m_stateRoot},
     };
+    if (!ReleaseIdleManagedPackage(error)) return false;
     const ApResponse response = m_backend->Call(QStringLiteral("prepare_standalone"),
                                                 params, 600000);
     if (!response.ok) {
@@ -793,6 +798,18 @@ bool ApCoordinator::SwitchToSeed(QString* error) {
     return StopSessionAndDeactivate(error);
 }
 
+bool ApCoordinator::ReleaseIdleManagedPackage(QString* error) {
+    if (m_activePackageName.isEmpty()) return true;
+    if (m_emu == nullptr || m_emu->IsEmulatorRunning()) {
+        if (error != nullptr) {
+            *error = tr("Close the emulator before preparing another randomizer package. "
+                        "The active package was left unchanged.");
+        }
+        return false;
+    }
+    return StopSessionAndDeactivate(error);
+}
+
 bool ApCoordinator::StopSessionAndDeactivate(QString* error) {
     // Stop the AP client and the exact game instance started by this
     // coordinator before allowing ModService to change the live overlay.
@@ -882,7 +899,7 @@ int ApCoordinator::RunHeadless(const ApPlayRequest& request, QString* error) {
         }
     }
     Prepared prepared;
-    if (!Prepare(request, &prepared, error)) {
+    if (!Prepare(request, &prepared, error, true)) {
         return 1;
     }
     bool wasConflict = false;

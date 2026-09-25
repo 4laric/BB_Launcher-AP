@@ -546,7 +546,7 @@ void ApPage::RandomizeClicked() {
     PrepareCurrent(nullptr);
 }
 
-bool ApPage::PrepareCurrent(bool* recoveredCollision) {
+bool ApPage::PrepareCurrent(bool* recoveredCollision, bool reuseExisting) {
     if (recoveredCollision != nullptr) *recoveredCollision = false;
     if (m_busy || m_coordinator->GameStarted()) return false;
     QString failure;
@@ -575,7 +575,7 @@ bool ApPage::PrepareCurrent(bool* recoveredCollision) {
     SetBusy(true, tr("Randomizing your game"));
     bool prepared = standalone
         ? m_coordinator->PrepareStandalone(standaloneRequest, &m_prepared, &failure)
-        : m_coordinator->Prepare(apRequest, &m_prepared, &failure);
+        : m_coordinator->Prepare(apRequest, &m_prepared, &failure, reuseExisting);
     SetBusy(false);
     if (!prepared && !m_cancelled && !standalone && apRequest.enemizer.enabled &&
         m_coordinator->lastErrorCode() == QStringLiteral("package-exists")) {
@@ -615,7 +615,7 @@ void ApPage::PlayClicked() {
     }
     if (!m_hasPrepared) {
         bool recoveredCollision = false;
-        if (!PrepareCurrent(&recoveredCollision) || recoveredCollision) return;
+        if (!PrepareCurrent(&recoveredCollision, true) || recoveredCollision) return;
     }
     if (!EnsureConfigured(&failure)) { ShowError(failure); return; }
     m_cancelled = false;

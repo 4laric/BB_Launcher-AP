@@ -62,7 +62,7 @@ class ApPage : public QDialog {
     void LoadSettings();
     void SaveSettings() const;
     bool BuildRequest(ApPlayRequest* request, QString* error) const;
-    bool PrepareCurrent(bool* recoveredCollision);
+    bool PrepareCurrent(bool* recoveredCollision, bool reuseExisting = false);
     void closeEvent(QCloseEvent* event) override;
 
     ApCoordinator* m_coordinator;
