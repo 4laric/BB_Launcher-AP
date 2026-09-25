@@ -66,7 +66,12 @@ int main(int argc, char** argv) {
             }
             const QJsonObject enemizer = params.value("enemizer").toObject();
             const QString collidedSeed = qEnvironmentVariable("BB_AP_TEST_COLLIDE_ENEMY_SEED");
-            if (!collidedSeed.isEmpty() &&
+            const QString activePath = qEnvironmentVariable("BB_AP_TEST_REQUIRE_DEACTIVATED");
+            if (!activePath.isEmpty() && QDir(activePath).exists()) {
+                succeeded = false;
+                error = {{"code", "active-package"},
+                         {"detail", "Managed package is still active during export."}};
+            } else if (!collidedSeed.isEmpty() &&
                 enemizer.value("seed").toString() == collidedSeed) {
                 succeeded = false;
                 error = {{"code", "package-exists"},
@@ -106,30 +111,37 @@ int main(int argc, char** argv) {
                 }
             }
         } else if (op == QStringLiteral("prepare_standalone")) {
-            const QString packageName = QStringLiteral("Bloodborne-Standalone-Fixture");
-            const QString packagePath = QDir(params.value("mods_root").toString())
-                                            .filePath(packageName);
-            QDir().mkpath(packagePath + QStringLiteral("/dvdroot_ps4/map"));
-            QFile payload(packagePath + QStringLiteral("/dvdroot_ps4/map/standalone.bin"));
-            if (payload.open(QIODevice::WriteOnly)) payload.write("standalone-map");
-            const QString receiptPath = packagePath + QStringLiteral("/receipt.json");
-            QFile receipt(receiptPath);
-            if (receipt.open(QIODevice::WriteOnly)) {
-                const QByteArray value = QByteArray(params.value("expanded_coverage").toBool()
-                    ? "fixture-receipt-expanded" : "fixture-receipt-reviewed")
-                    + (params.value("normalize_scaling").toBool() ? "-scaled" : "-unscaled");
-                receipt.write(value);
-            }
-            const QString capturePath = qEnvironmentVariable("BB_AP_TEST_CAPTURE_REQUEST");
-            if (!capturePath.isEmpty()) {
-                QFile capture(capturePath);
-                if (capture.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-                    capture.write(QJsonDocument(request).toJson(QJsonDocument::Compact));
+            const QString activePath = qEnvironmentVariable("BB_AP_TEST_REQUIRE_DEACTIVATED");
+            if (!activePath.isEmpty() && QDir(activePath).exists()) {
+                succeeded = false;
+                error = {{"code", "active-package"},
+                         {"detail", "Managed package is still active during export."}};
+            } else {
+                const QString packageName = QStringLiteral("Bloodborne-Standalone-Fixture");
+                const QString packagePath = QDir(params.value("mods_root").toString())
+                                                .filePath(packageName);
+                QDir().mkpath(packagePath + QStringLiteral("/dvdroot_ps4/map"));
+                QFile payload(packagePath + QStringLiteral("/dvdroot_ps4/map/standalone.bin"));
+                if (payload.open(QIODevice::WriteOnly)) payload.write("standalone-map");
+                const QString receiptPath = packagePath + QStringLiteral("/receipt.json");
+                QFile receipt(receiptPath);
+                if (receipt.open(QIODevice::WriteOnly)) {
+                    const QByteArray value = QByteArray(params.value("expanded_coverage").toBool()
+                        ? "fixture-receipt-expanded" : "fixture-receipt-reviewed")
+                        + (params.value("normalize_scaling").toBool() ? "-scaled" : "-unscaled");
+                    receipt.write(value);
                 }
+                const QString capturePath = qEnvironmentVariable("BB_AP_TEST_CAPTURE_REQUEST");
+                if (!capturePath.isEmpty()) {
+                    QFile capture(capturePath);
+                    if (capture.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                        capture.write(QJsonDocument(request).toJson(QJsonDocument::Compact));
+                    }
+                }
+                result = {{"package_name", packageName}, {"package_path", packagePath},
+                          {"receipt_path", receiptPath}, {"receipt_id", "fixture-standalone"},
+                          {"seed", params.value("seed")}, {"display_name", "Standalone fixture"}};
             }
-            result = {{"package_name", packageName}, {"package_path", packagePath},
-                      {"receipt_path", receiptPath}, {"receipt_id", "fixture-standalone"},
-                      {"seed", params.value("seed")}, {"display_name", "Standalone fixture"}};
         } else if (op == QStringLiteral("verify_standalone")) {
             const QString capturePath = qEnvironmentVariable("BB_AP_TEST_CAPTURE_VERIFY");
             if (!capturePath.isEmpty()) {

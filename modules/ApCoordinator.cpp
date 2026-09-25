@@ -126,6 +126,17 @@ QString ApCoordinator::Preflight(const QString& action) {
             .arg(m_recoveryError);
     }
     if (m_ownStart) {
+        if (action == QStringLiteral("start-game")) {
+            m_ipcStartPending = false;
+        }
+        return {};
+    }
+    if (action == QStringLiteral("start-game") && m_ipcStartPending &&
+        m_emu != nullptr &&
+        m_emu->OwnsProcess(m_gameIdentity)) {
+        // The emulator's IPC handshake starts the game after StartGame has
+        // returned. It belongs to our tracked process, not a second launch.
+        m_ipcStartPending = false;
         return {};
     }
     const bool starting = action == QStringLiteral("start") ||
@@ -251,7 +262,7 @@ bool ApCoordinator::InspectSeed(const QString& seedPath, const QString& playerNa
 }
 
 bool ApCoordinator::Prepare(const ApPlayRequest& request, Prepared* prepared,
-                            QString* error) {
+                            QString* error, bool reuseExisting) {
     emit StageChanged(tr("Preparing your seed"));
     m_lastErrorCode.clear();
     if (prepared != nullptr) *prepared = Prepared{};
@@ -296,6 +307,7 @@ bool ApCoordinator::Prepare(const ApPlayRequest& request, Prepared* prepared,
         {QStringLiteral("ap_client"), client},
         {QStringLiteral("suppression_dir"), m_backendDir + QStringLiteral("/suppression")},
         {QStringLiteral("cache_root"), m_stateRoot + QStringLiteral("/cache")},
+        {QStringLiteral("reuse_existing"), reuseExisting},
         {QStringLiteral("enemizer"),
          QJsonObject{{QStringLiteral("enabled"), request.enemizer.enabled},
                      {QStringLiteral("seed"), request.enemizer.seed.isEmpty()
@@ -323,6 +335,9 @@ bool ApCoordinator::Prepare(const ApPlayRequest& request, Prepared* prepared,
                                EmulatorService::Sha256OfFile(
                                    QCoreApplication::applicationFilePath())}});
 #endif
+    if (!ReleaseIdleManagedPackage(error)) {
+        return false;
+    }
     ApResponse response = m_backend->Call(QStringLiteral("prepare_play"), params, 600000);
     if (!response.ok) {
         m_lastErrorCode = response.error.code;
@@ -391,6 +406,7 @@ bool ApCoordinator::PrepareStandalone(const StandalonePlayRequest& request,
         {QStringLiteral("mods_root"), m_modRoots.inactive},
         {QStringLiteral("state_root"), m_stateRoot},
     };
+    if (!ReleaseIdleManagedPackage(error)) return false;
     const ApResponse response = m_backend->Call(QStringLiteral("prepare_standalone"),
                                                 params, 600000);
     if (!response.ok) {
@@ -654,14 +670,17 @@ bool ApCoordinator::StartGame(QString* error) {
     Common::PathToQString(eboot, Common::installPath / "eboot.bin");
     const QStringList args{QStringLiteral("--game"), eboot};
     const QString workDir = fileInfo.absolutePath();
+    m_ipcStartPending = true;
     m_ownStart = true;
     EmulatorProcessIdentity identity;
     const bool started = m_emu->Start(fileInfo, args, workDir, &identity, error);
     m_ownStart = false;
     if (!started) {
+        m_ipcStartPending = false;
         return false;
     }
     if (!identity.valid) {
+        m_ipcStartPending = false;
         if (error != nullptr) {
             *error = tr("Could not establish the emulator process identity");
         }
@@ -779,6 +798,18 @@ bool ApCoordinator::SwitchToSeed(QString* error) {
     return StopSessionAndDeactivate(error);
 }
 
+bool ApCoordinator::ReleaseIdleManagedPackage(QString* error) {
+    if (m_activePackageName.isEmpty()) return true;
+    if (m_emu == nullptr || m_emu->IsEmulatorRunning()) {
+        if (error != nullptr) {
+            *error = tr("Close the emulator before preparing another randomizer package. "
+                        "The active package was left unchanged.");
+        }
+        return false;
+    }
+    return StopSessionAndDeactivate(error);
+}
+
 bool ApCoordinator::StopSessionAndDeactivate(QString* error) {
     // Stop the AP client and the exact game instance started by this
     // coordinator before allowing ModService to change the live overlay.
@@ -846,6 +877,7 @@ bool ApCoordinator::StopSessionAndDeactivate(QString* error) {
 }
 
 void ApCoordinator::ResetSession() {
+    m_ipcStartPending = false;
     m_playId.clear();
     m_armId.clear();
     m_sessionId.clear();
@@ -867,7 +899,7 @@ int ApCoordinator::RunHeadless(const ApPlayRequest& request, QString* error) {
         }
     }
     Prepared prepared;
-    if (!Prepare(request, &prepared, error)) {
+    if (!Prepare(request, &prepared, error, true)) {
         return 1;
     }
     bool wasConflict = false;

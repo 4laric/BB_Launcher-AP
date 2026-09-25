@@ -147,6 +147,19 @@ bool EmulatorService::IsEmulatorRunning() const {
     return process != nullptr && process->state() != QProcess::NotRunning;
 }
 
+bool EmulatorService::OwnsProcess(const EmulatorProcessIdentity& identity) const {
+    const QProcess* process = m_ipc == nullptr ? nullptr : m_ipc->emulatorProcess();
+    if (!identity.valid || process == nullptr || process->state() != QProcess::Running ||
+        static_cast<qint64>(process->processId()) != identity.pid) {
+        return false;
+    }
+    if (identity.hasCreationTime) {
+        quint64 birth = 0;
+        return CreationTimeOf(identity.pid, &birth) && birth == identity.creationTime;
+    }
+    return true;
+}
+
 bool EmulatorService::Start(const QFileInfo& exe, const QStringList& args,
                             const QString& workDir, EmulatorProcessIdentity* identity,
                             QString* error) {
