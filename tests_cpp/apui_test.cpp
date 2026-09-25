@@ -218,7 +218,7 @@ class ApUiTest final : public QObject {
         const QJsonObject capturedRequest =
             QJsonDocument::fromJson(captured.readAll()).object();
         QCOMPARE(capturedRequest.value(QStringLiteral("params")).toObject()
-                     .value(QStringLiteral("reuse_existing")).toBool(), false);
+                     .value(QStringLiteral("reuse_existing")).toBool(), true);
         const QJsonObject enemy =
             capturedRequest.value(QStringLiteral("params")).toObject()
                 .value(QStringLiteral("enemizer")).toObject();
@@ -245,6 +245,13 @@ class ApUiTest final : public QObject {
         };
         QCOMPARE(preparedBossPool(attempts[0]), QStringLiteral("good"));
         QCOMPARE(preparedBossPool(attempts[1]), QStringLiteral("reviewed"));
+        const auto reuseExisting = [](const QByteArray& attempt) {
+            return QJsonDocument::fromJson(attempt).object()
+                .value(QStringLiteral("params")).toObject()
+                .value(QStringLiteral("reuse_existing")).toBool();
+        };
+        QCOMPARE(reuseExisting(attempts[0]), false);
+        QCOMPARE(reuseExisting(attempts[1]), true);
         QVERIFY(page.findChild<QLabel*>(QStringLiteral("apStatus"))->text()
                     .contains(QStringLiteral("117 enemy swaps")));
         QVERIFY(page.findChild<QLabel*>(QStringLiteral("apStatus"))->text()
