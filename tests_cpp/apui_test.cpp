@@ -17,7 +17,6 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
-#include <QSignalSpy>
 #include <QTimer>
 
 #include <filesystem>
@@ -144,6 +143,7 @@ class ApUiTest final : public QObject {
         qunsetenv("BB_AP_TEST_COLLIDE_ENEMY_SEED");
         qunsetenv("BB_AP_TEST_MIGRATION_FAIL");
         qunsetenv("BB_AP_TEST_MIGRATION_STATUS");
+        qunsetenv("BB_AP_TEST_REJECT_SEED_PATH");
         qunsetenv("BB_AP_TEST_LEGACY_MARKER");
         qunsetenv("BB_AP_TEST_REQUIRE_DEACTIVATED");
         qunsetenv("BB_AP_TEST_CAPTURE_VERIFY");
@@ -158,6 +158,12 @@ class ApUiTest final : public QObject {
         QVERIFY(seed.open(QIODevice::WriteOnly));
         seed.write("fixture");
         seed.close();
+        const QString invalidSeed = m_scratch->path() + QStringLiteral("/invalid.bbseed.json");
+        QFile invalid(invalidSeed);
+        QVERIFY(invalid.open(QIODevice::WriteOnly));
+        invalid.write("invalid fixture");
+        invalid.close();
+        qputenv("BB_AP_TEST_REJECT_SEED_PATH", invalidSeed.toLocal8Bit());
 
         ApPage page(m_coordinator.get());
         page.show();
@@ -165,12 +171,13 @@ class ApUiTest final : public QObject {
         auto* player = page.findChild<QComboBox*>(QStringLiteral("apPlayerChoice"));
         auto* play = page.findChild<QPushButton*>(QStringLiteral("apPlay"));
         auto* randomize = page.findChild<QPushButton*>(QStringLiteral("apRandomize"));
-        auto* changeSeed = page.findChild<QPushButton*>(QStringLiteral("apSwitchSeed"));
         auto* enemyMode = page.findChild<QComboBox*>(QStringLiteral("enemyMode"));
         auto* bossPool = page.findChild<QComboBox*>(QStringLiteral("apBossPool"));
         auto* enemySeed = page.findChild<QLineEdit*>(QStringLiteral("apEnemySeed"));
         auto* scaling = page.findChild<QCheckBox*>(QStringLiteral("apEnemyNormalizeStats"));
-        QVERIFY(seedEdit && player && play && randomize && changeSeed);
+        QVERIFY(seedEdit && player && play && randomize);
+        QVERIFY(!page.findChild<QPushButton*>(QStringLiteral("apSwitchSeed")));
+        QVERIFY(page.findChild<QPushButton*>(QStringLiteral("apDisableRandomizer")));
         QVERIFY(enemyMode && bossPool && enemySeed && scaling);
         QVERIFY(!page.findChild<QCheckBox*>(QStringLiteral("apEnemyTierMixing")));
         QVERIFY(!page.findChild<QCheckBox*>(QStringLiteral("apEnemyPreserveLocomotion")));
@@ -275,22 +282,78 @@ class ApUiTest final : public QObject {
         QVERIFY(focusedAttempts.open(QIODevice::ReadOnly));
         QCOMPARE(focusedAttempts.readAll().trimmed().split('\n').size(), 2);
 
+        QFile operations(m_opLog);
+        QVERIFY(operations.open(QIODevice::ReadOnly));
+        const QByteArray beforeSameSeed = operations.readAll();
+        operations.close();
+        QVERIFY(QMetaObject::invokeMethod(&page, "SeedChanged"));
+        QVERIFY(operations.open(QIODevice::ReadOnly));
+        QCOMPARE(operations.readAll(), beforeSameSeed);
+        operations.close();
+        QCOMPARE(m_emulator->stopCalls, 0);
+
+        seedEdit->clear();
+        QVERIFY(QMetaObject::invokeMethod(&page, "SeedChanged"));
+        QCOMPARE(seedEdit->text(), seedPath);
+        QVERIFY(m_coordinator->GameStarted());
+        QTest::mouseClick(play, Qt::LeftButton);
+        QCOMPARE(m_emulator->focusCalls, 2);
+
+        seedEdit->setText(m_scratch->path() + QStringLiteral("/missing.bbseed.json"));
+        QVERIFY(QMetaObject::invokeMethod(&page, "SeedChanged"));
+        QCOMPARE(seedEdit->text(), seedPath);
+        QVERIFY(m_coordinator->GameStarted());
+        QTest::mouseClick(play, Qt::LeftButton);
+        QCOMPARE(m_emulator->focusCalls, 3);
+
+        seedEdit->setText(invalidSeed);
+        QVERIFY(QMetaObject::invokeMethod(&page, "SeedChanged"));
+        QCOMPARE(seedEdit->text(), seedPath);
+        QVERIFY(m_coordinator->GameStarted());
+        QCOMPARE(m_emulator->stopCalls, 0);
+        QTest::mouseClick(play, Qt::LeftButton);
+        QCOMPARE(m_emulator->focusCalls, 4);
+
+        const QString nextSeed = m_scratch->path() + QStringLiteral("/next.bbseed.json");
+        QFile next(nextSeed);
+        QVERIFY(next.open(QIODevice::WriteOnly));
+        next.write("next fixture");
+        next.close();
         QTimer answerTimer;
         answerTimer.setInterval(10);
         connect(&answerTimer, &QTimer::timeout, &answerTimer, [&answerTimer] {
             auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
             if (box != nullptr) {
-                if (QAbstractButton* yes = box->button(QMessageBox::Yes)) {
-                    yes->click();
+                if (QAbstractButton* no = box->button(QMessageBox::No)) {
+                    no->click();
                     answerTimer.stop();
                 }
             }
         });
         answerTimer.start();
-        QVERIFY(changeSeed->isEnabled());
-        QSignalSpy switchClicked(changeSeed, &QPushButton::clicked);
-        QTest::mouseClick(changeSeed, Qt::LeftButton);
-        QCOMPARE(switchClicked.count(), 1);
+        seedEdit->setText(nextSeed);
+        QVERIFY(QMetaObject::invokeMethod(&page, "SeedChanged"));
+        QCOMPARE(seedEdit->text(), seedPath);
+        QVERIFY(m_coordinator->GameStarted());
+        QCOMPARE(m_emulator->stopCalls, 0);
+        QTest::mouseClick(play, Qt::LeftButton);
+        QCOMPARE(m_emulator->focusCalls, 5);
+
+        QTimer yesTimer;
+        yesTimer.setInterval(10);
+        connect(&yesTimer, &QTimer::timeout, &yesTimer, [&yesTimer] {
+            auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+            if (box != nullptr) {
+                if (QAbstractButton* yes = box->button(QMessageBox::Yes)) {
+                    yes->click();
+                    yesTimer.stop();
+                }
+            }
+        });
+        yesTimer.start();
+        seedEdit->setText(nextSeed);
+        QVERIFY(QMetaObject::invokeMethod(&page, "SeedChanged"));
+        QCOMPARE(seedEdit->text(), nextSeed);
         auto* status = page.findChild<QLabel*>(QStringLiteral("apStatus"));
         QVERIFY2(!m_coordinator->HasSession(), status ? qPrintable(status->text()) : "missing status");
         QVERIFY(!m_coordinator->GameStarted());
