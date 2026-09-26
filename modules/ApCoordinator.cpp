@@ -533,7 +533,7 @@ bool ApCoordinator::Activate(const Prepared& prepared, bool allowDisableConflict
         if (error != nullptr) *error = tr("The previous game setup could not be verified. No new mod was activated.");
         return false;
     }
-    const bool retiredLegacy = migrationStatus != QStringLiteral("no_legacy");
+    const bool retiredLegacy = migrationStatus == QStringLiteral("migrated");
     if (retiredLegacy) {
         emit StageChanged(tr("Previous Archipelago mod removed; preparing the new mod."));
     }

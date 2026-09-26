@@ -672,6 +672,10 @@ void ApPage::PlayClicked() {
             return;
         }
     }
+    // Activation moves the prepared package out of inactive Mods. If arming,
+    // startup, or the running game then fails, the next Launch must prepare
+    // again so it can safely release the managed package before export.
+    m_hasPrepared = false;
     if (m_cancelled) {
         SetStatus(tr("Cancelled. Use Regular play to restore the previous setup."), false);
         SetBusy(false);

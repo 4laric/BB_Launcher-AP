@@ -143,6 +143,7 @@ class ApUiTest final : public QObject {
         qunsetenv("BB_AP_TEST_CAPTURE_PREPARES");
         qunsetenv("BB_AP_TEST_COLLIDE_ENEMY_SEED");
         qunsetenv("BB_AP_TEST_MIGRATION_FAIL");
+        qunsetenv("BB_AP_TEST_MIGRATION_STATUS");
         qunsetenv("BB_AP_TEST_LEGACY_MARKER");
         qunsetenv("BB_AP_TEST_REQUIRE_DEACTIVATED");
         qunsetenv("BB_AP_TEST_CAPTURE_VERIFY");
@@ -270,6 +271,9 @@ class ApUiTest final : public QObject {
         QTest::mouseClick(play, Qt::LeftButton);
         QCOMPARE(m_emulator->focusCalls, 1);
         QCOMPARE(m_emulator->startCalls, 1);
+        QFile focusedAttempts(m_capturedPrepares);
+        QVERIFY(focusedAttempts.open(QIODevice::ReadOnly));
+        QCOMPARE(focusedAttempts.readAll().trimmed().split('\n').size(), 2);
 
         QTimer answerTimer;
         answerTimer.setInterval(10);
@@ -346,6 +350,55 @@ class ApUiTest final : public QObject {
         QVERIFY(m_coordinator->GameStarted());
         QVERIFY(QDir(QDir::currentPath() + QStringLiteral("/BBLauncher/Mods-Active (DO NOT DELETE)/Archipelago-Fixture")).exists());
         QVERIFY(QFile::exists(m_scratch->path() + QStringLiteral("/CUSA03173-mods/dvdroot_ps4/map/fixture.bin")));
+    }
+
+    void launchAfterGameClosesPreparesTheSameSeedAgain() {
+        const QString seedPath = m_scratch->path() + QStringLiteral("/fixture.bbseed.json");
+        QFile seed(seedPath);
+        QVERIFY(seed.open(QIODevice::WriteOnly));
+        seed.write("fixture");
+        seed.close();
+
+        ApPage page(m_coordinator.get());
+        page.show();
+        page.findChild<QLineEdit*>(QStringLiteral("apSeedPath"))->setText(seedPath);
+        QVERIFY(QMetaObject::invokeMethod(&page, "SeedChanged"));
+        page.findChild<QComboBox*>(QStringLiteral("apPlayerChoice"))
+            ->setCurrentText(QStringLiteral("Alice"));
+        page.findChild<QComboBox*>(QStringLiteral("apBossPool"))->setCurrentIndex(1);
+        page.findChild<QLineEdit*>(QStringLiteral("apEnemySeed"))
+            ->setText(QStringLiteral("retry-enemy-seed"));
+        auto* launch = page.findChild<QPushButton*>(QStringLiteral("apPlay"));
+        QTest::mouseClick(launch, Qt::LeftButton);
+        QCOMPARE(m_emulator->startCalls, 1);
+        QVERIFY(m_coordinator->GameStarted());
+
+        // The emulator closed after activation. The package is active, so a
+        // second Launch must release it and prepare again before activation.
+        m_emulator->running = false;
+        QString error;
+        QVERIFY2(m_coordinator->GameClosed(&error), qPrintable(error));
+        const QString activePackage = QDir::currentPath() + QStringLiteral(
+            "/BBLauncher/Mods-Active (DO NOT DELETE)/Archipelago-Fixture");
+        QVERIFY(QDir(activePackage).exists());
+        qputenv("BB_AP_TEST_REQUIRE_DEACTIVATED", activePackage.toLocal8Bit());
+        QTest::mouseClick(launch, Qt::LeftButton);
+        QCOMPARE(m_emulator->startCalls, 2);
+        QVERIFY(m_coordinator->GameStarted());
+        QVERIFY(QDir(activePackage).exists());
+
+        QFile attempts(m_capturedPrepares);
+        QVERIFY(attempts.open(QIODevice::ReadOnly));
+        const QList<QByteArray> lines = attempts.readAll().trimmed().split('\n');
+        QCOMPARE(lines.size(), 2);
+        const QJsonObject first = QJsonDocument::fromJson(lines[0]).object()
+                                      .value(QStringLiteral("params")).toObject();
+        const QJsonObject second = QJsonDocument::fromJson(lines[1]).object()
+                                       .value(QStringLiteral("params")).toObject();
+        QCOMPARE(second.value(QStringLiteral("seed_path")), first.value(QStringLiteral("seed_path")));
+        QCOMPARE(second.value(QStringLiteral("player_name")), first.value(QStringLiteral("player_name")));
+        QCOMPARE(second.value(QStringLiteral("enemizer")), first.value(QStringLiteral("enemizer")));
+        QCOMPARE(second.value(QStringLiteral("reuse_existing")).toBool(), true);
     }
 
     void armedIpcStartsOnlyTheOwnedGameOnce() {
@@ -557,6 +610,28 @@ class ApUiTest final : public QObject {
         const QByteArray log = ops.readAll();
         QVERIFY(log.contains("migrate_legacy_overlay\n"));
         QVERIFY(!log.contains("verify_and_arm\n"));
+    }
+
+    void alreadyMigratedDoesNotClaimThePackageWasRemoved() {
+        const QString seedPath = m_scratch->path() + QStringLiteral("/legacy.bbseed.json");
+        QFile seed(seedPath);
+        QVERIFY(seed.open(QIODevice::WriteOnly));
+        seed.write("fixture");
+        seed.close();
+        QString error;
+        QVERIFY2(m_coordinator->Configure(m_gameRoot,
+                    QCoreApplication::applicationDirPath() + QStringLiteral("/ap_backend"),
+                    ApBackend::DefaultStateRoot(), &error), qPrintable(error));
+        ApPlayRequest request{m_gameRoot, seedPath, QStringLiteral("Alice"), {}, {}};
+        ApCoordinator::Prepared prepared;
+        QVERIFY2(m_coordinator->Prepare(request, &prepared, &error), qPrintable(error));
+        const QString package = QDir::currentPath() +
+            QStringLiteral("/BBLauncher/Mods/Archipelago-Fixture");
+        QVERIFY(QDir(package).removeRecursively());
+        qputenv("BB_AP_TEST_MIGRATION_STATUS", "already_migrated");
+        QVERIFY(!m_coordinator->Activate(prepared, false, nullptr, &error));
+        QVERIFY(error.contains(QStringLiteral("not in the inactive mods")));
+        QVERIFY(!error.contains(QStringLiteral("previous Archipelago mod was removed")));
     }
 
     void legacyMigrationDeactivatesSameManagedPackageFirst() {
