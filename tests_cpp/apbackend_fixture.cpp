@@ -44,11 +44,17 @@ int main(int argc, char** argv) {
                                                    "migrate_legacy_overlay"}}};
         } else if (op == QStringLiteral("inspect_seed")) {
             const QString player = params.value("player_name").toString();
-            result = {{"seed", "Fixture seed"},
-                      {"server", "localhost:38281"},
-                      {"slots", QJsonArray{"Alice", "Bob"}},
-                      {"selected", player},
-                      {"needs_choice", player.isEmpty()}};
+            if (params.value("seed_path").toString() ==
+                qEnvironmentVariable("BB_AP_TEST_REJECT_SEED_PATH")) {
+                succeeded = false;
+                error = {{"code", "invalid-seed"}, {"detail", "Fixture seed is invalid."}};
+            } else {
+                result = {{"seed", "Fixture seed"},
+                          {"server", "localhost:38281"},
+                          {"slots", QJsonArray{"Alice", "Bob"}},
+                          {"selected", player},
+                          {"needs_choice", player.isEmpty()}};
+            }
         } else if (op == QStringLiteral("prepare_play")) {
             const QString attemptsPath = qEnvironmentVariable("BB_AP_TEST_CAPTURE_PREPARES");
             if (!attemptsPath.isEmpty()) {
@@ -107,7 +113,10 @@ int main(int argc, char** argv) {
                     const QString marker = qEnvironmentVariable("BB_AP_TEST_LEGACY_MARKER");
                     const bool present = !marker.isEmpty() && QFile::exists(marker);
                     if (present) QFile::remove(marker); // Simulated backend migration.
-                    result = {{"status", present ? "migrated" : "no_legacy"}};
+                    const QString status = qEnvironmentVariable("BB_AP_TEST_MIGRATION_STATUS");
+                    result = {{"status", status.isEmpty()
+                        ? (present ? QStringLiteral("migrated") : QStringLiteral("no_legacy"))
+                        : status}};
                 }
             }
         } else if (op == QStringLiteral("prepare_standalone")) {

@@ -63,6 +63,21 @@ bool AskRerandomize(QWidget* parent) {
     box.exec();
     return box.clickedButton() == rerandomize;
 }
+
+bool SameSeedPath(const QString& left, const QString& right) {
+    if (left.isEmpty() || right.isEmpty()) return left.isEmpty() && right.isEmpty();
+    const QString leftPath = QFileInfo(left).canonicalFilePath();
+    const QString rightPath = QFileInfo(right).canonicalFilePath();
+    if (!leftPath.isEmpty() && !rightPath.isEmpty()) {
+#ifdef _WIN32
+        return leftPath.compare(rightPath, Qt::CaseInsensitive) == 0;
+#else
+        return leftPath == rightPath;
+#endif
+    }
+    return QDir::cleanPath(QFileInfo(left).absoluteFilePath()) ==
+           QDir::cleanPath(QFileInfo(right).absoluteFilePath());
+}
 } // namespace
 
 ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
@@ -200,14 +215,19 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
     m_cancelButton = new QPushButton(tr("&Cancel"), this);
     m_cancelButton->setObjectName(QStringLiteral("apCancel"));
     connect(m_cancelButton, &QPushButton::clicked, this, &ApPage::CancelClicked);
-    m_switchSeedButton = new QPushButton(tr("Change &seed"), this);
-    m_switchSeedButton->setObjectName(QStringLiteral("apSwitchSeed"));
-    m_operationControls << m_switchSeedButton;
-    connect(m_switchSeedButton, &QPushButton::clicked, this, &ApPage::SwitchSeedClicked);
     actions->addWidget(m_randomizeButton);
     actions->addWidget(m_playButton);
     actions->addWidget(m_cancelButton);
-    actions->addWidget(m_switchSeedButton);
+    actions->addStretch();
+    m_regularButton = new QPushButton(tr("&Disable randomizer"), this);
+    m_regularButton->setObjectName(QStringLiteral("apDisableRandomizer"));
+    m_operationControls << m_regularButton;
+    connect(m_regularButton, &QPushButton::clicked, this, &ApPage::RegularPlayClicked);
+    auto* helpButton = new QPushButton(tr("&Diagnostics"), this);
+    m_operationControls << helpButton;
+    connect(helpButton, &QPushButton::clicked, this, &ApPage::HelpClicked);
+    actions->addWidget(m_regularButton);
+    actions->addWidget(helpButton);
     layout->addLayout(actions);
 
     m_progress = new QProgressBar(this);
@@ -219,26 +239,6 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
     m_statusLabel->setWordWrap(true);
     m_statusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     layout->addWidget(m_statusLabel, 1);
-
-    auto* nav = new QHBoxLayout();
-    auto* modsButton = new QPushButton(tr("&Mods"), this);
-    m_operationControls << modsButton;
-    connect(modsButton, &QPushButton::clicked, this, &ApPage::requestMods);
-    auto* emuButton = new QPushButton(tr("&Emulator settings"), this);
-    m_operationControls << emuButton;
-    connect(emuButton, &QPushButton::clicked, this, &ApPage::requestEmulatorSettings);
-    m_regularButton = new QPushButton(tr("&Regular play"), this);
-    m_regularButton->setObjectName(QStringLiteral("apRegularPlay"));
-    m_operationControls << m_regularButton;
-    connect(m_regularButton, &QPushButton::clicked, this, &ApPage::RegularPlayClicked);
-    auto* helpButton = new QPushButton(tr("&Help"), this);
-    m_operationControls << helpButton;
-    connect(helpButton, &QPushButton::clicked, this, &ApPage::HelpClicked);
-    nav->addWidget(modsButton);
-    nav->addWidget(emuButton);
-    nav->addWidget(m_regularButton);
-    nav->addWidget(helpButton);
-    layout->addLayout(nav);
 
     // The launcher's dark palette does not define PlaceholderText on every
     // platform, which otherwise leaves black hints on dark input fields.
@@ -261,8 +261,6 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
             [this](const QString&) { InvalidatePrepared(); });
     connect(m_includeDlc, &QCheckBox::toggled, this,
             [this](bool) { InvalidatePrepared(); });
-    connect(m_seedEdit, &QLineEdit::textChanged, this,
-            [this](const QString&) { InvalidatePrepared(); });
     connect(m_playerCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             [this](int) { InvalidatePrepared(); });
     connect(m_serverEdit, &QLineEdit::textChanged, this,
@@ -385,6 +383,7 @@ void ApPage::LoadSettings() {
         m_bossPool->setCurrentIndex(bossPoolIndex < 0 ? 0 : bossPoolIndex);
         m_normalizeScaling->setChecked(m_lastModeIndex == 1 ? m_standaloneScaling : m_apScaling);
         m_savedApSeedPath = saved.value(QStringLiteral("ap_seed_path")).toString();
+        m_currentSeedPath = m_savedApSeedPath;
         m_seedEdit->setText(m_savedApSeedPath);
         m_standaloneSeedEdit->setText(saved.value(QStringLiteral("standalone_seed")).toString());
         m_includeDlc->setChecked(saved.value(QStringLiteral("include_dlc")).toBool(true));
@@ -412,7 +411,7 @@ void ApPage::SaveSettings() const {
         ? m_normalizeScaling->isChecked() : m_standaloneScaling;
     const QJsonObject saved{
         {QStringLiteral("mode"), m_modeCombo->currentIndex()},
-        {QStringLiteral("ap_seed_path"), m_seedEdit->text().trimmed()},
+        {QStringLiteral("ap_seed_path"), m_currentSeedPath},
         {QStringLiteral("standalone_seed"), m_standaloneSeedEdit->text().trimmed()},
         {QStringLiteral("include_dlc"), m_includeDlc->isChecked()},
         {QStringLiteral("ap_enemy_mode"), apEnemy},
@@ -469,14 +468,28 @@ void ApPage::SeedChanged() {
         return;
     }
     const QString seedPath = m_seedEdit->text().trimmed();
+    const bool changingSeed = !SameSeedPath(seedPath, m_currentSeedPath);
+    if (!changingSeed && m_seedInspected) {
+        const QSignalBlocker block(m_seedEdit);
+        m_seedEdit->setText(m_currentSeedPath);
+        return;
+    }
+    const auto restoreSelection = [this]() {
+        const QSignalBlocker block(m_seedEdit);
+        m_seedEdit->setText(m_currentSeedPath);
+    };
     if (seedPath.isEmpty()) {
-        m_playerCombo->clear();
-        m_playerLabel->setVisible(false);
-        m_playerCombo->setVisible(false);
-        m_serverEdit->clear();
-        m_serverLabel->setVisible(false);
-        m_serverEdit->setVisible(false);
-        SetStatus(tr("Choose an AP seed file, then press Randomize."), false);
+        if (!m_currentSeedPath.isEmpty()) {
+            restoreSelection();
+            SetStatus(tr("The current seed is unchanged. Choose another seed file to switch."), false);
+        } else {
+            SetStatus(tr("Choose an AP seed file, then press Randomize."), false);
+        }
+        return;
+    }
+    if (!QFileInfo(seedPath).isFile()) {
+        restoreSelection();
+        ShowError(tr("The selected AP seed file could not be found. The current setup is unchanged."));
         return;
     }
     m_inspecting = true;
@@ -484,6 +497,7 @@ void ApPage::SeedChanged() {
     SetBusy(true, tr("Checking seed"));
     QString error;
     if (!EnsureConfigured(&error)) {
+        restoreSelection();
         ShowError(error);
         m_inspecting = false;
         SetBusy(false);
@@ -491,6 +505,7 @@ void ApPage::SeedChanged() {
     }
     ApResponse seen;
     if (!m_coordinator->InspectSeed(seedPath, {}, &seen, &error)) {
+        restoreSelection();
         if (m_cancelled) {
             SetStatus(tr("Seed check cancelled. No game or mod changes were made."), false);
         } else {
@@ -500,6 +515,32 @@ void ApPage::SeedChanged() {
         SetBusy(false);
         return;
     }
+    if (changingSeed) {
+        if (m_coordinator->HasSession() || m_coordinator->GameStarted()) {
+            const auto answer = AskDark(
+                this, tr("Switch seed"),
+                tr("Stop the current randomizer session and change seed?"));
+            if (answer != QMessageBox::Yes) {
+                restoreSelection();
+                SetStatus(tr("Seed switch cancelled. The current setup is unchanged."), false);
+                m_inspecting = false;
+                SetBusy(false);
+                return;
+            }
+        }
+        if ((!m_currentSeedPath.isEmpty() || m_coordinator->HasSession() ||
+             m_coordinator->GameStarted()) && !m_coordinator->SwitchToSeed(&error)) {
+            restoreSelection();
+            ShowError(error);
+            m_inspecting = false;
+            SetBusy(false);
+            return;
+        }
+        m_pollTimer->stop();
+        InvalidatePrepared();
+    }
+    m_currentSeedPath = seedPath;
+    m_seedInspected = true;
     QStringList slotNames;
     for (const QJsonValue& slot : seen.result.value(QStringLiteral("slots")).toArray()) {
         if (slot.isString()) {
@@ -530,6 +571,15 @@ void ApPage::SeedChanged() {
     m_inspecting = false;
     SetBusy(false);
     SaveSettings();
+}
+
+bool ApPage::EnsureSeedSelection() {
+    if (m_modeCombo->currentIndex() != 0) return true;
+    const QString requested = m_seedEdit->text().trimmed();
+    if (!m_seedInspected || !SameSeedPath(requested, m_currentSeedPath)) {
+        SeedChanged();
+    }
+    return m_seedInspected && SameSeedPath(requested, m_currentSeedPath);
 }
 
 bool ApPage::BuildRequest(ApPlayRequest* request, QString* error) const {
@@ -565,12 +615,14 @@ bool ApPage::BuildRequest(ApPlayRequest* request, QString* error) const {
 }
 
 void ApPage::RandomizeClicked() {
+    if (!EnsureSeedSelection()) return;
     PrepareCurrent(nullptr);
 }
 
 bool ApPage::PrepareCurrent(bool* recoveredCollision, bool reuseExisting) {
     if (recoveredCollision != nullptr) *recoveredCollision = false;
     if (m_busy || m_coordinator->GameStarted()) return false;
+    if (!EnsureSeedSelection()) return false;
     QString failure;
     if (!EnsureConfigured(&failure)) { ShowError(failure); return false; }
     m_cancelled = false;
@@ -630,6 +682,7 @@ bool ApPage::PrepareCurrent(bool* recoveredCollision, bool reuseExisting) {
 
 void ApPage::PlayClicked() {
     if (m_busy) return;
+    if (!EnsureSeedSelection()) return;
     QString failure;
     if (m_coordinator->GameStarted()) {
         if (!m_coordinator->ReturnToGame(&failure)) ShowError(failure);
@@ -645,7 +698,7 @@ void ApPage::PlayClicked() {
     bool wasConflict = false;
     if (!m_coordinator->Activate(m_prepared, false, &wasConflict, &failure)) {
         if (m_cancelled) {
-            SetStatus(tr("Cancelled after the current safe step. Use Regular play to restore the previous setup if needed."), false);
+            SetStatus(tr("Cancelled after the current safe step. Use Disable randomizer to restore the previous setup if needed."), false);
             SetBusy(false);
             return;
         }
@@ -672,8 +725,12 @@ void ApPage::PlayClicked() {
             return;
         }
     }
+    // Activation moves the prepared package out of inactive Mods. If arming,
+    // startup, or the running game then fails, the next Launch must prepare
+    // again so it can safely release the managed package before export.
+    m_hasPrepared = false;
     if (m_cancelled) {
-        SetStatus(tr("Cancelled. Use Regular play to restore the previous setup."), false);
+        SetStatus(tr("Cancelled. Use Disable randomizer to restore the previous setup."), false);
         SetBusy(false);
         return;
     }
@@ -721,39 +778,13 @@ void ApPage::CancelClicked() {
     SetStatus(tr("Cancellation requested. The current backend step will finish safely."), false);
 }
 
-void ApPage::SwitchSeedClicked() {
-    if (m_busy) {
-        return;
-    }
-    if (m_coordinator->HasSession() || m_coordinator->GameStarted()) {
-        auto answer = AskDark(
-            this, tr("Switch seed"),
-            tr("Stop the current randomizer session and change seed?"));
-        if (answer != QMessageBox::Yes) {
-            return;
-        }
-    }
-    QString error;
-    if (!m_coordinator->SwitchToSeed(&error)) {
-        ShowError(error);
-        return;
-    }
-    m_pollTimer->stop();
-    m_seedEdit->clear();
-    m_standaloneSeedEdit->clear();
-    m_playerCombo->clear();
-    m_hasPrepared = false;
-    SetStatus(tr("Choose a mode and seed, then press Randomize."), false);
-    RefreshForSession();
-}
-
 void ApPage::RegularPlayClicked() {
     if (m_busy) {
         return;
     }
     if (m_coordinator->HasSession() || m_coordinator->GameStarted()) {
         const auto answer = AskDark(
-            this, tr("Switch to regular play"),
+            this, tr("Disable randomizer"),
             tr("Stop the current game and client, then remove its active randomizer package?"));
         if (answer != QMessageBox::Yes) {
             return;
@@ -810,7 +841,7 @@ void ApPage::PollStatus() {
                       : tr("Game and Archipelago client are running. Check the game for connection status."), false);
     } else if (state == QStringLiteral("recoverable")) {
         SetStatus(tr("The Archipelago client or game is no longer running. "
-                     "Your setup is kept; use Regular play to restore your previous setup."), false);
+                     "Your setup is kept; use Disable randomizer to restore your previous setup."), false);
     }
     RefreshForSession();
 }

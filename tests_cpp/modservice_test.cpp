@@ -190,8 +190,58 @@ int main() {
         WriteFile(fx.installMods / "sfx" / "file.sfx", "user edit");
         const modservice::Result refused = service.Commit(down);
         CHECK(!refused.ok && refused.code == modservice::kUserChanged);
+        CHECK(refused.committed.empty());
         CHECK(ReadFile(fx.installMods / "sfx" / "file.sfx") == "user edit");
         CHECK(ReadFile(fx.backup / "Pack" / "sfx" / "file.sfx") == "vanilla");
+        const std::string journal = ReadFile(fx.journal / "modservice.jsonl");
+        CHECK(journal.find("\"kind\":\"abort\"", journal.rfind("\"kind\":\"plan\"")) !=
+              std::string::npos);
+        const modservice::Result recovered = service.Recover();
+        CHECK(recovered.ok && recovered.detail == "no interrupted activation");
+        CHECK(ReadFile(fx.installMods / "sfx" / "file.sfx") == "user edit");
+        CHECK(fs::is_directory(fx.active / "Pack"));
+    }
+
+    // An unfinished plan may be recovered only by its original installation.
+    // The state directory can be shared by separate launcher copies.
+    {
+        Fixture owner("journal-owner");
+        Fixture foreign("journal-foreign");
+        WriteFile(owner.inactive / "Pack" / "sfx" / "file.sfx", "mod");
+        WriteFile(owner.installMods / "sfx" / "file.sfx", "vanilla");
+        modservice::ModService service = owner.Service();
+        modservice::Plan plan;
+        CHECK(service.PlanActivate("Pack", plan).ok);
+        CHECK(service.Commit(plan).ok);
+        const std::string journal = ReadFile(owner.journal / "modservice.jsonl");
+        const auto planEnd = journal.find('\n');
+        CHECK(planEnd != std::string::npos);
+        if (planEnd != std::string::npos) {
+            WriteFile(owner.journal / "modservice.jsonl", journal.substr(0, planEnd + 1));
+            WriteFile(foreign.installMods / "sfx" / "file.sfx", "foreign edit");
+            modservice::ModService foreignService(
+                foreign.inactive, foreign.active, foreign.installMods, foreign.backup,
+                modservice::OverlayMode::Copy, owner.journal);
+            const modservice::Result refused = foreignService.Recover();
+            CHECK(!refused.ok && refused.code == modservice::kInterrupted);
+            CHECK(refused.detail.find("Another BBLauncher installation") != std::string::npos);
+            CHECK(ReadFile(foreign.installMods / "sfx" / "file.sfx") == "foreign edit");
+            CHECK(ReadFile(owner.installMods / "sfx" / "file.sfx") == "mod");
+            CHECK(ReadFile(owner.journal / "modservice.jsonl") == journal.substr(0, planEnd + 1));
+        }
+    }
+
+    // Old journal plans have no root identity; leave them for explicit review.
+    {
+        Fixture fx("unscoped-journal");
+        const std::string legacy =
+            "{\"kind\":\"plan\",\"mod\":\"Pack\",\"activating\":false,\"mutations\":[]}\n";
+        WriteFile(fx.journal / "modservice.jsonl", legacy);
+        modservice::ModService service = fx.Service();
+        const modservice::Result refused = service.Recover();
+        CHECK(!refused.ok && refused.code == modservice::kInterrupted);
+        CHECK(refused.detail.find("older launcher") != std::string::npos);
+        CHECK(ReadFile(fx.journal / "modservice.jsonl") == legacy);
     }
 
     // Cancellation during deactivation restores the pre-operation overlay and backups.

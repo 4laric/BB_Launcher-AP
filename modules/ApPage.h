@@ -45,7 +45,6 @@ class ApPage : public QDialog {
     void RandomizeClicked();
     void PlayClicked();
     void CancelClicked();
-    void SwitchSeedClicked();
     void RegularPlayClicked();
     void HelpClicked();
     void PollStatus();
@@ -61,6 +60,7 @@ class ApPage : public QDialog {
     void InvalidatePrepared();
     void LoadSettings();
     void SaveSettings() const;
+    bool EnsureSeedSelection();
     bool BuildRequest(ApPlayRequest* request, QString* error) const;
     bool PrepareCurrent(bool* recoveredCollision, bool reuseExisting = false);
     void closeEvent(QCloseEvent* event) override;
@@ -91,7 +91,6 @@ class ApPage : public QDialog {
     QPushButton* m_playButton = nullptr;
     QPushButton* m_randomizeButton = nullptr;
     QPushButton* m_cancelButton = nullptr;
-    QPushButton* m_switchSeedButton = nullptr;
     QPushButton* m_regularButton = nullptr;
     QLabel* m_statusLabel = nullptr;
     QProgressBar* m_progress = nullptr;
@@ -101,6 +100,7 @@ class ApPage : public QDialog {
     bool m_busy = false;
     bool m_hasPrepared = false;
     bool m_settingsLoaded = false;
+    bool m_seedInspected = false;
     int m_lastModeIndex = 0;
     int m_apEnemyMode = 0;
     int m_standaloneEnemyMode = 0;
@@ -109,6 +109,7 @@ class ApPage : public QDialog {
     QString m_savedPlayerName;
     QString m_savedServer;
     QString m_savedApSeedPath;
+    QString m_currentSeedPath;
     ApCoordinator::Prepared m_prepared;
     QList<QWidget*> m_operationControls;
 };
