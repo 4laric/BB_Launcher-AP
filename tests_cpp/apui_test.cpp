@@ -1072,6 +1072,11 @@ class ApUiTest final : public QObject {
     void savedChoicesRestoreWithoutAuthorityOrPassword() {
         const QString settingsPath = ApBackend::DefaultStateRoot() +
                                      QStringLiteral("/ui-settings.json");
+        const QString seedPath = m_scratch->path() + QStringLiteral("/remembered.bbseed.json");
+        QFile seed(seedPath);
+        QVERIFY(seed.open(QIODevice::WriteOnly));
+        seed.write("fixture");
+        seed.close();
         QVERIFY(QDir().mkpath(QFileInfo(settingsPath).absolutePath()));
         QFile legacy(settingsPath);
         QVERIFY(legacy.open(QIODevice::WriteOnly));
@@ -1086,7 +1091,11 @@ class ApUiTest final : public QObject {
             QVERIFY(scaling->isChecked()); // Old default-off setting is not carried forward.
             QCOMPARE(bossPool->currentData().toString(), QStringLiteral("reviewed"));
             auto* apSeed = page.findChild<QLineEdit*>(QStringLiteral("apSeedPath"));
-            apSeed->setText(QStringLiteral("C:/fixture/ap-seed.zip"));
+            apSeed->setText(seedPath);
+            QVERIFY(QMetaObject::invokeMethod(&page, "SeedChanged"));
+            QCOMPARE(apSeed->text(), seedPath);
+            // An unconfirmed manual edit must never replace the accepted seed.
+            apSeed->setText(m_scratch->path() + QStringLiteral("/not-selected.bbseed.json"));
             bossPool->setCurrentIndex(1);
             scaling->setChecked(false);
             enemy->setCurrentIndex(2);
@@ -1111,6 +1120,8 @@ class ApUiTest final : public QObject {
         QVERIFY(!saved.contains("\"normalize_scaling\""));
         QCOMPARE(QJsonDocument::fromJson(saved).object()
                      .value(QStringLiteral("ap_boss_pool")).toString(), QStringLiteral("good"));
+        QCOMPARE(QJsonDocument::fromJson(saved).object()
+                     .value(QStringLiteral("ap_seed_path")).toString(), seedPath);
         ApPage restored(m_coordinator.get());
         auto* mode = restored.findChild<QComboBox*>(QStringLiteral("playMode"));
         auto* enemy = restored.findChild<QComboBox*>(QStringLiteral("enemyMode"));
@@ -1130,7 +1141,7 @@ class ApUiTest final : public QObject {
         QVERIFY(!bossPool->isVisible());
         QVERIFY(!scaling->isChecked());
         QCOMPARE(restored.findChild<QLineEdit*>(QStringLiteral("apSeedPath"))->text(),
-                 QStringLiteral("C:/fixture/ap-seed.zip"));
+                 seedPath);
     }
 
     void launchBuildsWhenInputsChanged() {
