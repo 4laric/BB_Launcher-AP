@@ -26,9 +26,11 @@ int main(int argc, char** argv) {
                 log.write(op.toUtf8() + '\n');
             }
         }
-        if (op == QStringLiteral("inspect_seed")) {
+        if (op == QStringLiteral("inspect_seed") || op == QStringLiteral("session_status")) {
             bool ok = false;
-            const int delay = qEnvironmentVariableIntValue("BB_AP_TEST_DELAY_INSPECT_MS", &ok);
+            const int delay = qEnvironmentVariableIntValue(
+                op == QStringLiteral("inspect_seed") ? "BB_AP_TEST_DELAY_INSPECT_MS"
+                                                       : "BB_AP_TEST_DELAY_STATUS_MS", &ok);
             if (ok && delay > 0) QThread::msleep(static_cast<unsigned long>(delay));
         }
         QJsonObject result;
@@ -176,7 +178,13 @@ int main(int argc, char** argv) {
         } else if (op == QStringLiteral("connect_and_start_client")) {
             result = {{"session_id", "fixture-session"}};
         } else if (op == QStringLiteral("session_status")) {
-            result = {{"state", "playing"}};
+            if (qEnvironmentVariableIsSet("BB_AP_TEST_FAIL_STATUS")) {
+                succeeded = false;
+                error = {{"code", "fixture-status-failed"},
+                         {"detail", "Fixture status request failed"}};
+            } else {
+                result = {{"state", "playing"}};
+            }
         } else if (op == QStringLiteral("stop_client")) {
             result = {{"stopped", true}};
         } else if (op == QStringLiteral("cancel_operation")) {

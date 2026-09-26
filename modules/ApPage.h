@@ -61,6 +61,7 @@ class ApPage : public QDialog {
     void LoadSettings();
     void SaveSettings() const;
     bool EnsureSeedSelection();
+    void InspectSelectedSeed();
     bool BuildRequest(ApPlayRequest* request, QString* error) const;
     bool PrepareCurrent(bool* recoveredCollision, bool reuseExisting = false);
     void closeEvent(QCloseEvent* event) override;
@@ -98,6 +99,7 @@ class ApPage : public QDialog {
     bool m_cancelled = false;
     bool m_inspecting = false;
     bool m_busy = false;
+    bool m_operationActive = false;
     bool m_hasPrepared = false;
     bool m_settingsLoaded = false;
     bool m_seedInspected = false;

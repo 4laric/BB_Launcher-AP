@@ -14,6 +14,7 @@
 #include <QMessageBox>
 #include <QPalette>
 #include <QSaveFile>
+#include <QScopedValueRollback>
 #include <QSignalBlocker>
 #include <QUuid>
 #include <QVBoxLayout>
@@ -454,16 +455,24 @@ bool ApPage::EnsureConfigured(QString* error) {
 }
 
 void ApPage::BrowseSeed() {
+    if (m_operationActive || m_busy) return;
+    const QScopedValueRollback<bool> operation(m_operationActive, true);
     const QString path = QFileDialog::getOpenFileName(
         this, tr("Choose an Archipelago seed"),
         m_seedEdit->text(), tr("AP seed files (*.zip *.bbseed.json)"));
     if (!path.isEmpty()) {
         m_seedEdit->setText(path);
-        SeedChanged();
+        InspectSelectedSeed();
     }
 }
 
 void ApPage::SeedChanged() {
+    if (m_operationActive || m_busy) return;
+    const QScopedValueRollback<bool> operation(m_operationActive, true);
+    InspectSelectedSeed();
+}
+
+void ApPage::InspectSelectedSeed() {
     if (m_inspecting || m_modeCombo->currentIndex() != 0) {
         return;
     }
@@ -577,7 +586,7 @@ bool ApPage::EnsureSeedSelection() {
     if (m_modeCombo->currentIndex() != 0) return true;
     const QString requested = m_seedEdit->text().trimmed();
     if (!m_seedInspected || !SameSeedPath(requested, m_currentSeedPath)) {
-        SeedChanged();
+        InspectSelectedSeed();
     }
     return m_seedInspected && SameSeedPath(requested, m_currentSeedPath);
 }
@@ -615,6 +624,8 @@ bool ApPage::BuildRequest(ApPlayRequest* request, QString* error) const {
 }
 
 void ApPage::RandomizeClicked() {
+    if (m_operationActive || m_busy) return;
+    const QScopedValueRollback<bool> operation(m_operationActive, true);
     if (!EnsureSeedSelection()) return;
     PrepareCurrent(nullptr);
 }
@@ -681,7 +692,8 @@ bool ApPage::PrepareCurrent(bool* recoveredCollision, bool reuseExisting) {
 }
 
 void ApPage::PlayClicked() {
-    if (m_busy) return;
+    if (m_operationActive || m_busy) return;
+    const QScopedValueRollback<bool> operation(m_operationActive, true);
     if (!EnsureSeedSelection()) return;
     QString failure;
     if (m_coordinator->GameStarted()) {
@@ -779,9 +791,10 @@ void ApPage::CancelClicked() {
 }
 
 void ApPage::RegularPlayClicked() {
-    if (m_busy) {
+    if (m_operationActive || m_busy) {
         return;
     }
+    const QScopedValueRollback<bool> operation(m_operationActive, true);
     if (m_coordinator->HasSession() || m_coordinator->GameStarted()) {
         const auto answer = AskDark(
             this, tr("Disable randomizer"),
@@ -791,17 +804,21 @@ void ApPage::RegularPlayClicked() {
         }
     }
     QString error;
+    SetBusy(true, tr("Restoring regular play"));
     if (!EnsureConfigured(&error)) {
         ShowError(error);
+        SetBusy(false);
         return;
     }
     if (!m_coordinator->SwitchToRegularPlay(&error)) {
         ShowError(error);
+        SetBusy(false);
         return;
     }
     m_pollTimer->stop();
     m_hasPrepared = false;
     SetStatus(tr("Randomizer package removed. Your other mods were kept."), false);
+    SetBusy(false);
     RefreshForSession();
 }
 
@@ -822,7 +839,7 @@ void ApPage::HelpClicked() {
 }
 
 void ApPage::closeEvent(QCloseEvent* event) {
-    if (m_busy) {
+    if (m_busy || m_operationActive) {
         event->ignore();
         return;
     }
@@ -830,16 +847,25 @@ void ApPage::closeEvent(QCloseEvent* event) {
 }
 
 void ApPage::PollStatus() {
+    if (m_operationActive || m_busy) return;
+    const QScopedValueRollback<bool> operation(m_operationActive, true);
+    QList<bool> enabled;
+    enabled.reserve(m_operationControls.size());
+    for (QWidget* control : m_operationControls) {
+        enabled.push_back(control->isEnabled());
+        control->setEnabled(false);
+    }
     QString state;
     QString error;
-    if (!m_coordinator->RefreshStatus(&state, &error)) {
-        return;
+    const bool refreshed = m_coordinator->RefreshStatus(&state, &error);
+    for (qsizetype index = 0; index < m_operationControls.size(); ++index) {
+        m_operationControls[index]->setEnabled(enabled[index]);
     }
-    if (state == QStringLiteral("playing")) {
+    if (refreshed && state == QStringLiteral("playing")) {
         SetStatus(m_prepared.mode == ApCoordinator::Prepared::Mode::Standalone
                       ? tr("Game is running with the standalone randomizer package.")
                       : tr("Game and Archipelago client are running. Check the game for connection status."), false);
-    } else if (state == QStringLiteral("recoverable")) {
+    } else if (refreshed && state == QStringLiteral("recoverable")) {
         SetStatus(tr("The Archipelago client or game is no longer running. "
                      "Your setup is kept; use Disable randomizer to restore your previous setup."), false);
     }

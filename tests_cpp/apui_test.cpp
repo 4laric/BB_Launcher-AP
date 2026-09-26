@@ -148,6 +148,8 @@ class ApUiTest final : public QObject {
         qunsetenv("BB_AP_TEST_REQUIRE_DEACTIVATED");
         qunsetenv("BB_AP_TEST_CAPTURE_VERIFY");
         qunsetenv("BB_AP_TEST_OP_LOG");
+        qunsetenv("BB_AP_TEST_DELAY_STATUS_MS");
+        qunsetenv("BB_AP_TEST_FAIL_STATUS");
         QVERIFY(QDir::setCurrent(m_previousCwd));
         m_scratch.reset();
     }
@@ -539,6 +541,99 @@ class ApUiTest final : public QObject {
         QVERIFY2(m_coordinator->InspectSeed(seedPath, QStringLiteral("Alice"), &response, &error),
                  qPrintable(error));
         QVERIFY(response.ok);
+    }
+
+    void pollingDoesNotOverlapLaunchOrRandomize() {
+        qputenv("BB_AP_TEST_DELAY_STATUS_MS", "350");
+        const QString seedPath = m_scratch->path() + QStringLiteral("/fixture.bbseed.json");
+        QFile seed(seedPath);
+        QVERIFY(seed.open(QIODevice::WriteOnly));
+        seed.write("fixture");
+        seed.close();
+
+        ApPage page(m_coordinator.get());
+        page.show();
+        page.findChild<QLineEdit*>(QStringLiteral("apSeedPath"))->setText(seedPath);
+        QVERIFY(QMetaObject::invokeMethod(&page, "SeedChanged"));
+        page.findChild<QComboBox*>(QStringLiteral("apPlayerChoice"))
+            ->setCurrentText(QStringLiteral("Alice"));
+        auto* launch = page.findChild<QPushButton*>(QStringLiteral("apPlay"));
+        auto* randomize = page.findChild<QPushButton*>(QStringLiteral("apRandomize"));
+        QTest::mouseClick(launch, Qt::LeftButton);
+        QCOMPARE(m_emulator->startCalls, 1);
+        m_emulator->running = false;
+        QString error;
+        QVERIFY2(m_coordinator->GameClosed(&error), qPrintable(error));
+        QVERIFY(QMetaObject::invokeMethod(&page, "PollStatus"));
+        QVERIFY(launch->isEnabled());
+        QVERIFY(randomize->isEnabled());
+        QFile operations(m_opLog);
+        QVERIFY(operations.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        operations.close();
+
+        bool clickedDuringStatus = false;
+        QTimer::singleShot(50, &page, [&] {
+            clickedDuringStatus = true;
+            QVERIFY(!randomize->isEnabled());
+            QVERIFY(!launch->isEnabled());
+            QTest::mouseClick(randomize, Qt::LeftButton);
+            QTest::mouseClick(launch, Qt::LeftButton);
+            QVERIFY(QMetaObject::invokeMethod(&page, "RandomizeClicked"));
+            QVERIFY(QMetaObject::invokeMethod(&page, "PlayClicked"));
+            QVERIFY(QMetaObject::invokeMethod(&page, "PollStatus"));
+        });
+        QVERIFY(QMetaObject::invokeMethod(&page, "PollStatus"));
+        QVERIFY(clickedDuringStatus);
+        qunsetenv("BB_AP_TEST_DELAY_STATUS_MS");
+        QVERIFY(randomize->isEnabled());
+        QVERIFY(launch->isEnabled());
+
+        QFile attempts(m_capturedPrepares);
+        QVERIFY(attempts.open(QIODevice::ReadOnly));
+        QCOMPARE(attempts.readAll().trimmed().split('\n').size(), 1);
+        attempts.close();
+        QVERIFY(operations.open(QIODevice::ReadOnly));
+        QCOMPARE(operations.readAll().count("session_status\n"), 1);
+        operations.close();
+        QCOMPARE(m_emulator->startCalls, 1);
+        QVERIFY(!page.findChild<QLabel*>(QStringLiteral("apStatus"))->text()
+                     .contains(QStringLiteral("already in progress")));
+
+        QTest::mouseClick(randomize, Qt::LeftButton);
+        QVERIFY(attempts.open(QIODevice::ReadOnly));
+        QCOMPARE(attempts.readAll().trimmed().split('\n').size(), 2);
+        QTest::mouseClick(launch, Qt::LeftButton);
+        QCOMPARE(m_emulator->startCalls, 2);
+    }
+
+    void failedPollRestoresActionControls() {
+        qputenv("BB_AP_TEST_FAIL_STATUS", "1");
+        const QString seedPath = m_scratch->path() + QStringLiteral("/fixture.bbseed.json");
+        QFile seed(seedPath);
+        QVERIFY(seed.open(QIODevice::WriteOnly));
+        seed.write("fixture");
+        seed.close();
+
+        ApPage page(m_coordinator.get());
+        page.show();
+        page.findChild<QLineEdit*>(QStringLiteral("apSeedPath"))->setText(seedPath);
+        QVERIFY(QMetaObject::invokeMethod(&page, "SeedChanged"));
+        page.findChild<QComboBox*>(QStringLiteral("apPlayerChoice"))
+            ->setCurrentText(QStringLiteral("Alice"));
+        auto* launch = page.findChild<QPushButton*>(QStringLiteral("apPlay"));
+        auto* randomize = page.findChild<QPushButton*>(QStringLiteral("apRandomize"));
+        QTest::mouseClick(launch, Qt::LeftButton);
+        QCOMPARE(m_emulator->startCalls, 1);
+        m_emulator->running = false;
+        QString error;
+        QVERIFY2(m_coordinator->GameClosed(&error), qPrintable(error));
+        QVERIFY(QMetaObject::invokeMethod(&page, "PollStatus"));
+        QVERIFY(launch->isEnabled());
+        QVERIFY(randomize->isEnabled());
+        QTest::mouseClick(randomize, Qt::LeftButton);
+        QFile attempts(m_capturedPrepares);
+        QVERIFY(attempts.open(QIODevice::ReadOnly));
+        QCOMPARE(attempts.readAll().trimmed().split('\n').size(), 2);
     }
 
     void preparedPackageCollisionRerandomizesWithoutLaunching() {
