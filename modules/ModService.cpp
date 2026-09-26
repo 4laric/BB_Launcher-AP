@@ -220,6 +220,20 @@ std::string PathToUtf8(const std::filesystem::path& path) {
 #endif
 }
 
+std::string JournalRoot(const std::filesystem::path& path) {
+    std::error_code ec;
+    const auto absolute = std::filesystem::absolute(path, ec);
+    return PathToUtf8((ec ? path : absolute).lexically_normal());
+}
+
+bool SameJournalRoot(const std::string& recorded, const std::filesystem::path& current) {
+#ifdef _WIN32
+    return FoldCase(recorded) == FoldCase(JournalRoot(current));
+#else
+    return recorded == JournalRoot(current);
+#endif
+}
+
 } // namespace
 
 std::string Sha256File(const std::filesystem::path& path) {
@@ -527,7 +541,11 @@ void ModService::JournalAppend(const std::string& kind, const Plan& plan,
     }
     std::ostringstream body;
     body << "{\"kind\":\"" << JsonEscape(kind) << "\",\"mod\":\""
-         << JsonEscape(plan.modName) << "\",\"activating\":"
+         << JsonEscape(plan.modName) << "\",\"inactiveRoot\":\""
+         << JsonEscape(JournalRoot(m_inactiveRoot)) << "\",\"activeRoot\":\""
+         << JsonEscape(JournalRoot(m_activeRoot)) << "\",\"installMods\":\""
+         << JsonEscape(JournalRoot(m_installMods)) << "\",\"backupRoot\":\""
+         << JsonEscape(JournalRoot(m_backupRoot)) << "\",\"activating\":"
          << (plan.activating ? "true" : "false") << ",\"backupMissing\":"
          << (plan.backupMissing ? "true" : "false") << ",\"mutations\":[";
     bool first = true;
@@ -894,10 +912,16 @@ Result ModService::Commit(const Plan& plan, Progress progress, Cancelled cancell
                       "plan reports unresolved conflicts; confirm override to proceed", {}, {}};
     }
     JournalAppend("plan", plan);
+    bool passedPreflight = plan.activating;
     Result result = plan.activating ? CommitActivate(plan, progress, cancelled)
-                                    : CommitDeactivate(plan, progress, cancelled);
+                                    : CommitDeactivate(plan, progress, cancelled, passedPreflight);
     if (result.ok) {
         JournalAppend("done", plan, result.committed);
+    } else if (!passedPreflight) {
+        // Deactivation's read-only preflight rejected the plan before any
+        // mutation. Rollback would itself reject changed bytes and leave an
+        // unnecessary open plan for startup recovery.
+        JournalAppend("abort", plan);
     } else {
         const Result rollback = Rollback(plan);
         if (rollback.ok) {
@@ -1052,7 +1076,8 @@ Result ModService::CommitActivate(const Plan& plan, Progress progress, Cancelled
     return result;
 }
 
-Result ModService::CommitDeactivate(const Plan& plan, Progress progress, Cancelled cancelled) {
+Result ModService::CommitDeactivate(const Plan& plan, Progress progress, Cancelled cancelled,
+                                    bool& passedPreflight) {
     Result result{true, kOk, {}, {}, {}};
     std::error_code ec;
     const std::filesystem::path active = m_activeRoot / plan.modName;
@@ -1061,6 +1086,7 @@ Result ModService::CommitDeactivate(const Plan& plan, Progress progress, Cancell
 
     if (plan.backupMissing) {
         // Legacy path: no backup to restore; the package just moves back.
+        passedPreflight = true;
         if (std::filesystem::exists(inactive, ec)) {
             std::filesystem::remove_all(inactive, ec);
         }
@@ -1127,6 +1153,8 @@ Result ModService::CommitDeactivate(const Plan& plan, Progress progress, Cancell
                           {}, {mutation.relative}};
         }
     }
+
+    passedPreflight = true;
 
     const std::size_t total = plan.mutations.size() * 2;
     std::size_t done = 0;
@@ -1238,6 +1266,27 @@ Result ModService::Recover(Progress progress, Cancelled cancelled) {
     if (!ParsePlanRecord(lastPlan, plan)) {
         return Result{false, kInterrupted,
                       "interrupted transaction journal is malformed and was left untouched: " +
+                          PathToUtf8(m_journalPath),
+                      {}, {}};
+    }
+    std::string inactiveRoot, activeRoot, installMods, backupRoot;
+    if (!ReadJsonString(lastPlan, "inactiveRoot", 0, inactiveRoot) ||
+        !ReadJsonString(lastPlan, "activeRoot", 0, activeRoot) ||
+        !ReadJsonString(lastPlan, "installMods", 0, installMods) ||
+        !ReadJsonString(lastPlan, "backupRoot", 0, backupRoot)) {
+        return Result{false, kInterrupted,
+                      "An older launcher left an unfinished mod change; recovery needs verification "
+                      "before any files can be changed. Journal: " +
+                          PathToUtf8(m_journalPath),
+                      {}, {}};
+    }
+    if (!SameJournalRoot(inactiveRoot, m_inactiveRoot) ||
+        !SameJournalRoot(activeRoot, m_activeRoot) ||
+        !SameJournalRoot(installMods, m_installMods) ||
+        !SameJournalRoot(backupRoot, m_backupRoot)) {
+        return Result{false, kInterrupted,
+                      "Another BBLauncher installation has an unfinished mod change. Open that "
+                      "installation to finish recovery. Its files were left untouched. Journal: " +
                           PathToUtf8(m_journalPath),
                       {}, {}};
     }

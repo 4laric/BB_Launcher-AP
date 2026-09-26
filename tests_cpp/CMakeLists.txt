@@ -7,6 +7,10 @@
 
 find_package(Qt6 REQUIRED COMPONENTS Core Test)
 
+add_executable(modservice_test modservice_test.cpp ../modules/ModService.cpp)
+set_target_properties(modservice_test PROPERTIES CXX_STANDARD 20)
+add_test(NAME modservice_test COMMAND modservice_test)
+
 add_executable(regular_settings_import_test
     regular_settings_import_test.cpp
     ../settings/RegularSettingsImport.cpp)
