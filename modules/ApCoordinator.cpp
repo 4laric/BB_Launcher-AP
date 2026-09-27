@@ -316,6 +316,7 @@ bool ApCoordinator::Prepare(const ApPlayRequest& request, Prepared* prepared,
                      {QStringLiteral("allow_tier_mixing"), request.enemizer.allowTierMixing},
                      {QStringLiteral("preserve_locomotion"), request.enemizer.preserveLocomotion},
                      {QStringLiteral("normalize_scaling"), request.enemizer.normalizeScaling},
+                     {QStringLiteral("no_winter_lanterns"), request.enemizer.noWinterLanterns},
                      {QStringLiteral("boss_canary"), request.enemizer.bossCanary},
                      {QStringLiteral("boss_pool"), request.enemizer.bossPool.isEmpty()
                                                        ? QJsonValue(QJsonValue::Null)

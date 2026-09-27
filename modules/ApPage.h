@@ -89,6 +89,7 @@ class ApPage : public QDialog {
     QLineEdit* m_enemySeedEdit = nullptr;
     QWidget* m_enemySeedRow = nullptr;
     QCheckBox* m_normalizeScaling = nullptr;
+    QCheckBox* m_noWinterLanterns = nullptr;
     QPushButton* m_playButton = nullptr;
     QPushButton* m_randomizeButton = nullptr;
     QPushButton* m_cancelButton = nullptr;
