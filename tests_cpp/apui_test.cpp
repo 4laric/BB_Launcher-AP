@@ -316,7 +316,9 @@ class ApUiTest final : public QObject {
         QTest::mouseClick(play, Qt::LeftButton);
         QCOMPARE(m_emulator->focusCalls, 4);
 
-        const QString nextSeed = m_scratch->path() + QStringLiteral("/next.bbseed.json");
+        // WebHost accepts the same AP zip archive with a .bbseed suffix.
+        // Browsing and switching must preserve it as an ordinary seed path.
+        const QString nextSeed = m_scratch->path() + QStringLiteral("/next.bbseed");
         QFile next(nextSeed);
         QVERIFY(next.open(QIODevice::WriteOnly));
         next.write("next fixture");
