@@ -104,7 +104,7 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
     m_operationControls << m_modeCombo;
     m_seedEdit = new QLineEdit(this);
     m_seedEdit->setObjectName(QStringLiteral("apSeedPath"));
-    m_seedEdit->setPlaceholderText(tr("AP seed file (.zip or .bbseed.json)"));
+    m_seedEdit->setPlaceholderText(tr("AP seed file (.bbseed, .zip, or .bbseed.json)"));
     m_seedEdit->setClearButtonEnabled(true);
     auto* browse = new QPushButton(tr("Browse…"), this);
     connect(browse, &QPushButton::clicked, this, &ApPage::BrowseSeed);
@@ -459,7 +459,7 @@ void ApPage::BrowseSeed() {
     const QScopedValueRollback<bool> operation(m_operationActive, true);
     const QString path = QFileDialog::getOpenFileName(
         this, tr("Choose an Archipelago seed"),
-        m_seedEdit->text(), tr("AP seed files (*.zip *.bbseed.json)"));
+        m_seedEdit->text(), tr("AP seed files (*.bbseed *.zip *.bbseed.json)"));
     if (!path.isEmpty()) {
         m_seedEdit->setText(path);
         InspectSelectedSeed();
