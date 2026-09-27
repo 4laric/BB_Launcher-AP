@@ -177,6 +177,9 @@ class ApUiTest final : public QObject {
         auto* bossPool = page.findChild<QComboBox*>(QStringLiteral("apBossPool"));
         auto* enemySeed = page.findChild<QLineEdit*>(QStringLiteral("apEnemySeed"));
         auto* scaling = page.findChild<QCheckBox*>(QStringLiteral("apEnemyNormalizeStats"));
+        auto* noLanterns = page.findChild<QCheckBox*>(QStringLiteral("apNoWinterLanterns"));
+        QVERIFY(noLanterns);
+        QVERIFY(!noLanterns->isChecked());
         QVERIFY(seedEdit && player && play && randomize);
         QVERIFY(!page.findChild<QPushButton*>(QStringLiteral("apSwitchSeed")));
         QVERIFY(page.findChild<QPushButton*>(QStringLiteral("apDisableRandomizer")));
@@ -205,6 +208,7 @@ class ApUiTest final : public QObject {
         QTest::mouseClick(scaling, Qt::LeftButton, Qt::NoModifier,
                           QPoint(10, scaling->height() / 2));
         QVERIFY(scaling->isChecked());
+        noLanterns->setChecked(true);
         enemySeed->setText(QStringLiteral("fixture-enemy-seed"));
         seedEdit->setText(seedPath);
         QVERIFY(QMetaObject::invokeMethod(&page, "SeedChanged"));
@@ -233,6 +237,7 @@ class ApUiTest final : public QObject {
             capturedRequest.value(QStringLiteral("params")).toObject()
                 .value(QStringLiteral("enemizer")).toObject();
         QCOMPARE(enemy.value(QStringLiteral("enabled")).toBool(), true);
+        QCOMPARE(enemy.value(QStringLiteral("no_winter_lanterns")).toBool(), true);
         QCOMPARE(enemy.value(QStringLiteral("seed")).toString(),
                  QStringLiteral("fixture-enemy-seed"));
         QCOMPARE(enemy.value(QStringLiteral("allow_tier_mixing")).toBool(), true);
@@ -1193,6 +1198,7 @@ class ApUiTest final : public QObject {
             QCOMPARE(apSeed->text(), seedPath);
             // An unconfirmed manual edit must never replace the accepted seed.
             apSeed->setText(m_scratch->path() + QStringLiteral("/not-selected.bbseed.json"));
+            page.findChild<QCheckBox*>(QStringLiteral("apNoWinterLanterns"))->setChecked(true);
             bossPool->setCurrentIndex(1);
             scaling->setChecked(false);
             enemy->setCurrentIndex(2);
@@ -1220,6 +1226,7 @@ class ApUiTest final : public QObject {
         QCOMPARE(QJsonDocument::fromJson(saved).object()
                      .value(QStringLiteral("ap_seed_path")).toString(), seedPath);
         ApPage restored(m_coordinator.get());
+        QVERIFY(restored.findChild<QCheckBox*>(QStringLiteral("apNoWinterLanterns"))->isChecked());
         auto* mode = restored.findChild<QComboBox*>(QStringLiteral("playMode"));
         auto* enemy = restored.findChild<QComboBox*>(QStringLiteral("enemyMode"));
         auto* bossPool = restored.findChild<QComboBox*>(QStringLiteral("apBossPool"));

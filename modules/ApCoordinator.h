@@ -38,6 +38,7 @@ struct ApPlayRequest {
         bool allowTierMixing = true;
         bool preserveLocomotion = false;
         bool normalizeScaling = false;
+        bool noWinterLanterns = false;
         bool bossCanary = false;
         QString bossPool;
         bool releaseContracts = false;

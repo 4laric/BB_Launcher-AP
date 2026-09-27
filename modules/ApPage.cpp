@@ -198,6 +198,10 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
     m_normalizeScaling->setObjectName(QStringLiteral("apEnemyNormalizeStats"));
     m_normalizeScaling->setChecked(true);
     enemyLayout->addWidget(m_normalizeScaling);
+    m_noWinterLanterns = new QCheckBox(tr("No Winter Lanterns"), m_enemizerGroup);
+    m_noWinterLanterns->setObjectName(QStringLiteral("apNoWinterLanterns"));
+    m_noWinterLanterns->setToolTip(tr("Replace normal Winter Lantern spawns and exclude them from enemy replacements."));
+    enemyLayout->addWidget(m_noWinterLanterns);
     connect(m_enemyMode, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             [this](int) { RefreshMode(); InvalidatePrepared(); });
     m_operationControls << m_enemizerGroup;
@@ -274,6 +278,8 @@ ApPage::ApPage(ApCoordinator* coordinator, QWidget* parent)
             [this](int) { InvalidatePrepared(); });
     connect(m_normalizeScaling, &QCheckBox::toggled, this,
             [this](bool) { InvalidatePrepared(); });
+    connect(m_noWinterLanterns, &QCheckBox::toggled, this,
+            [this](bool) { InvalidatePrepared(); });
     m_pollTimer = new QTimer(this);
     m_pollTimer->setInterval(5000);
     connect(m_pollTimer, &QTimer::timeout, this, &ApPage::PollStatus);
@@ -316,6 +322,7 @@ void ApPage::RefreshEnemizerControls() {
     m_enemizerGroup->setEnabled(!m_busy && !sessionLocked);
     const bool optionsEnabled = !m_busy && !sessionLocked && m_enemyMode->currentIndex() != 2;
     m_normalizeScaling->setEnabled(optionsEnabled);
+    m_noWinterLanterns->setEnabled(optionsEnabled);
     m_bossPool->setEnabled(optionsEnabled && m_modeCombo->currentIndex() == 0);
 }
 
@@ -356,6 +363,7 @@ void ApPage::RefreshMode() {
     m_passwordEdit->setVisible(!standalone);
     m_enemySeedRow->setVisible(!standalone && m_enemyMode->currentIndex() != 2);
     m_bossPoolRow->setVisible(!standalone && m_enemyMode->currentIndex() != 2);
+    m_noWinterLanterns->setVisible(!standalone && m_enemyMode->currentIndex() != 2);
     RefreshEnemizerControls();
 }
 
@@ -369,6 +377,7 @@ void ApPage::LoadSettings() {
         const QSignalBlocker blockStandaloneSeed(m_standaloneSeedEdit);
         const QSignalBlocker blockEnemy(m_enemyMode);
         const QSignalBlocker blockBossPool(m_bossPool);
+        const QSignalBlocker blockLanterns(m_noWinterLanterns);
         const QSignalBlocker blockDlc(m_includeDlc);
         const QSignalBlocker blockScaling(m_normalizeScaling);
         m_apEnemyMode = qBound(0, saved.value(QStringLiteral("ap_enemy_mode")).toInt(), 2);
@@ -379,6 +388,7 @@ void ApPage::LoadSettings() {
         m_lastModeIndex = saved.value(QStringLiteral("mode")).toInt() == 1 ? 1 : 0;
         m_modeCombo->setCurrentIndex(m_lastModeIndex);
         m_enemyMode->setCurrentIndex(m_lastModeIndex == 1 ? m_standaloneEnemyMode : m_apEnemyMode);
+        m_noWinterLanterns->setChecked(saved.value(QStringLiteral("no_winter_lanterns")).toBool(false));
         const int bossPoolIndex = m_bossPool->findData(
             saved.value(QStringLiteral("ap_boss_pool")).toString());
         m_bossPool->setCurrentIndex(bossPoolIndex < 0 ? 0 : bossPoolIndex);
@@ -416,6 +426,7 @@ void ApPage::SaveSettings() const {
         {QStringLiteral("standalone_seed"), m_standaloneSeedEdit->text().trimmed()},
         {QStringLiteral("include_dlc"), m_includeDlc->isChecked()},
         {QStringLiteral("ap_enemy_mode"), apEnemy},
+        {QStringLiteral("no_winter_lanterns"), m_noWinterLanterns->isChecked()},
         {QStringLiteral("ap_boss_pool"), m_bossPool->currentData().toString()},
         {QStringLiteral("standalone_enemy_mode"), standaloneEnemy},
         {QStringLiteral("ap_normalize_scaling"), apScaling},
@@ -614,6 +625,7 @@ bool ApPage::BuildRequest(ApPlayRequest* request, QString* error) const {
         request->enemizer.allowTierMixing = true;
         request->enemizer.preserveLocomotion = false;
         request->enemizer.normalizeScaling = m_normalizeScaling->isChecked();
+        request->enemizer.noWinterLanterns = m_noWinterLanterns->isChecked();
         request->enemizer.bossPool = m_bossPool->currentData().toString();
         const bool expanded = m_enemyMode->currentIndex() == 1;
         request->enemizer.releaseContracts = expanded;
